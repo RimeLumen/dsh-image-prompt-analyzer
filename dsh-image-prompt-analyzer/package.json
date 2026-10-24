@@ -1,0 +1,48 @@
+{
+  "name": "@RimeLumen/dsh-image-prompt-analyzer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "图像提示词分析插件：把一张图片分析成统一视觉描述 IR，再按目标模型的标准化配置编译成正向 / 抑制提示词与控制方式建议。",
+  "type": "module",
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "locale",
+    "configs",
+    "lib",
+    "python",
+    "scripts",
+    "README.md"
+  ],
+  "dsh": {
+    "engines": {
+      "dsh": ">=2.0.0"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings-general"
+      ],
+      "platform": "web"
+    }
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "import-tags": "node scripts/import-tags.mjs",
+    "export-experiences": "node scripts/export-experiences.mjs"
+  }
+}

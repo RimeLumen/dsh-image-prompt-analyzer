@@ -1,0 +1,423 @@
+{
+  "schema_version": "1.0",
+  "config_id": "poster-typography",
+  "kind": "image_type_rule",
+  "code": "T3-TYP",
+  "marker": "[T3-TYP]",
+  "display_name": "海报与字体设计",
+  "scope": "文字或版式构成主视觉的平面设计：海报、字体设计（logotype / 字体样张）、品牌视觉、专辑与书籍封面、活动主视觉。判定核心是\"文字不是说明，文字就是主体\"—— 把文字删掉，画面就不成立了。",
+  "exclusions": [
+    "只含少量水印或签名的照片与插画（文字非主体）→ 走 photography / illustration",
+    "以图形或角色为主体、文字仅为标签的画面 → 走 ip-character 或 illustration",
+    "纯 UI 界面与信息图（不属于视觉提示词逆向的输入范围）"
+  ],
+  "priority": 60,
+  "min_score": 0.45,
+  "min_signals": 3,
+  "secondary_threshold": 0.6,
+  "identification": {
+    "summary": "文字占据视觉重心、版式本身构成图形结构、字体有明确的风格选择 —— 判海报与字体设计。",
+    "signals": [
+      {
+        "id": "T3-S1",
+        "label": "文字即主视觉",
+        "observable": "文字元素占据画面 20% 以上面积或构成第一视觉重点；删掉文字后画面失去主体。",
+        "weight": 0.28
+      },
+      {
+        "id": "T3-S2",
+        "label": "版式结构可辨",
+        "observable": "存在明确的网格、对齐轴、边距系统或分割线，元素按规则排列而非随意摆放。",
+        "weight": 0.2
+      },
+      {
+        "id": "T3-S3",
+        "label": "字体风格选择",
+        "observable": "能辨识出字体的类别（衬线/无衬线/黑体/手写/装饰/等宽）及其字重与字宽。",
+        "weight": 0.18
+      },
+      {
+        "id": "T3-S4",
+        "label": "字号层级",
+        "observable": "存在至少三级字号差（主标题/副标题/正文），层级由大小与字重共同建立。",
+        "weight": 0.14
+      },
+      {
+        "id": "T3-S5",
+        "label": "文字的特效或材质",
+        "observable": "文字被赋予材质（金属/玻璃/霓虹/纸张）或特效（浮雕/斜面/发光/渐变/全息）。",
+        "weight": 0.12
+      },
+      {
+        "id": "T3-S6",
+        "label": "平面化背景",
+        "observable": "背景为纯色、渐变、几何图形或低信息底图，不构成独立叙事。",
+        "weight": 0.08
+      }
+    ],
+    "anti_signals": [
+      {
+        "id": "T3-X1",
+        "label": "无文字",
+        "observable": "画面内不存在可辨识的文字元素。",
+        "weight": 0.4,
+        "veto": true
+      },
+      {
+        "id": "T3-X2",
+        "label": "文字仅为附属标注",
+        "observable": "文字只占画面极小面积（<5%）且不参与构图。",
+        "weight": 0.3
+      },
+      {
+        "id": "T3-X3",
+        "label": "叙事性主体主导",
+        "observable": "存在完整的人物、场景或角色叙事，文字退居说明地位。",
+        "weight": 0.25
+      }
+    ]
+  },
+  "dimensions": [
+    {
+      "id": "D1",
+      "name": "字体风格与字形类别",
+      "ir_category": "quality_style",
+      "slot": "quality_style.typeface_class",
+      "required": true,
+      "question": "这是什么类别的字体？它的造型语言属于哪个传统？",
+      "observable_criteria": [
+        "大类：衬线体 / 无衬线体 / 粗衬线（slab）/ 手写体 / 装饰体 / 等宽体 / 黑letter",
+        "细分：几何无衬线（圆形骨架）、怪诞无衬线（中性）、人文无衬线（笔意）、Didone（极致粗细对比）、过渡体",
+        "判断依据：笔画末端有无衬线、笔画粗细对比强弱、字碗与字腔形状、字重与字宽",
+        "不得只写\"现代字体\"，必须落到骨架特征"
+      ],
+      "forbidden": ["不要在没有明显特征时断言具体字体名（如 Helvetica），只能给类别"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D2",
+      "name": "字形结构",
+      "ir_category": "quality_style",
+      "slot": "quality_style.glyph_anatomy",
+      "required": true,
+      "question": "字形的骨架与比例是怎样的？x 高度、字腔、笔画端点有什么特征？",
+      "observable_criteria": [
+        "x 高度：高 x 高度（现代感、易读）或低 x 高度（古典感）",
+        "字腔（counter）：开阔或闭合；字碗（bowl）圆润或方正",
+        "端点：平切、圆切、斜切、喇叭口",
+        "转角：锐角、圆角、切角（chamfer）",
+        "骨架：几何式（圆规作图）或书写式（毛笔/钢笔笔意）"
+      ],
+      "forbidden": ["不要用\"有设计感\"代替结构描述"],
+      "fallback_uncertainty": "insufficient_detail"
+    },
+    {
+      "id": "D3",
+      "name": "字重与比例",
+      "ir_category": "quality_style",
+      "slot": "quality_style.weight_scale",
+      "required": true,
+      "question": "字重跨度多大？宽高比例如何？有没有拉伸或压缩？",
+      "observable_criteria": [
+        "字重：Thin/Light/Regular/Medium/Bold/Black 的档位，以及画面内是否用到多档对比",
+        "字宽：Condensed（压缩）/ Normal / Extended（扩展）",
+        "比例：字面高度与宽度比，是否有纵向拉伸",
+        "光学尺寸：大标题是否用了更紧的字距（display 尺寸需要收紧 tracking）"
+      ],
+      "forbidden": ["不要在只有单一字重的画面里写\"字重对比强烈\""],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D4",
+      "name": "排版逻辑与网格",
+      "ir_category": "composition",
+      "slot": "composition.layout_grid",
+      "required": true,
+      "question": "元素怎么排？用什么网格？对齐关系是什么？",
+      "observable_criteria": [
+        "网格：单栏/多栏、模数网格、黄金比例分割、三分分割",
+        "对齐：左对齐/右对齐/居中/两端对齐/自由错位（破坏性排版）",
+        "轴：单一中轴 / 双轴 / 对角轴 / 无轴",
+        "间距：字距（tracking）、行距（leading）、字偶距（kerning）是否被刻意调整",
+        "留白：边距是否统一、是否使用大面积负空间"
+      ],
+      "forbidden": ["不要在没有网格证据时说\"版式严谨\""],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D5",
+      "name": "配色体系",
+      "ir_category": "lighting_color",
+      "slot": "lighting_color.palette_relation",
+      "required": true,
+      "question": "色彩怎么组织？是单色、双色还是多色？文字与背景的对比关系如何？",
+      "observable_criteria": [
+        "色数：单色/双色/三色/多色，是否有明确的强调色",
+        "关系：互补、邻近、分裂互补、单色明度阶",
+        "对比：文字与背景的明度差是否足够（可读性）",
+        "印刷特征：专色（Pantone 感）、套印错位、丝网印刷的网点"
+      ],
+      "forbidden": ["不要只写\"配色高级\"，必须给出色相关系"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D6",
+      "name": "材质与表面",
+      "ir_category": "appearance",
+      "slot": "appearance.material_finish",
+      "required": true,
+      "question": "文字被赋予了什么材质？表面如何反射光？",
+      "observable_criteria": [
+        "金属：镜面铬（chrome）、拉丝金属（brushed metal）、阳极氧化",
+        "透明：磨砂玻璃（frosted glass）、亚克力、水晶",
+        "纸感：凸版压痕（letterpress）、烫金、丝网油墨厚度",
+        "环境：文字表面是否反射环境（holographic / iridescent）"
+      ],
+      "forbidden": ["不要给没有材质表现的纯色文字强加材质"],
+      "fallback_uncertainty": "insufficient_detail"
+    },
+    {
+      "id": "D7",
+      "name": "特效与三维化",
+      "ir_category": "quality_style",
+      "slot": "quality_style.effect_stack",
+      "required": true,
+      "question": "文字上叠加了什么效果？是平面发光还是三维挤出？",
+      "observable_criteria": [
+        "发光：外发光（outer glow）、内发光（inner glow）、霓虹灯管",
+        "立体：浮雕（embossed）、斜面（beveled 3D）、挤出（extrusion）、倒角",
+        "光学：色差（chromatic aberration）、模糊、噪点叠加",
+        "渲染：3D 字是否有一致的灯光方向与材质反射"
+      ],
+      "forbidden": ["不要同时写 embossed 与 beveled 却不说明它们作用在哪一层"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D8",
+      "name": "Logo 与图形的构图关系",
+      "ir_category": "composition",
+      "slot": "composition.lockup_relation",
+      "required": true,
+      "question": "文字与图形/Logo 怎么组合？是锁定组合还是分离排布？",
+      "observable_criteria": [
+        "组合方式：字标（logotype）/ 图形标（logomark）/ 组合锁定（lockup）/ 徽章式（badge）",
+        "关系：文字在图形内/外、环绕、叠加、与图形共用笔画",
+        "比例：图形与文字的高度比、安全边距",
+        "有无辅助图形（线条、网点、几何底纹）参与构图"
+      ],
+      "forbidden": ["不要在没有图形元素时说\"Logo 构图\""],
+      "fallback_uncertainty": "entity_ambiguous"
+    }
+  ],
+  "lexicon": [
+    {
+      "term_en": "x-height",
+      "term_zh": "x 高度",
+      "definition": "小写字母 x 的高度，决定字体的视觉大小与易读性。高 x 高度显现代、低 x 高度显古典。",
+      "visual_criteria": "对比小写 x 与大写字母的高度比例。",
+      "prompt_usage": "high x-height typeface",
+      "aliases": ["字面高度"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "cap height",
+      "term_zh": "大写高度",
+      "definition": "大写字母从基线到顶部的距离，是字体度量体系的核心参数之一。",
+      "visual_criteria": "大写字母的顶端到基线的垂直距离。",
+      "prompt_usage": "tall cap height",
+      "aliases": ["字冠高度"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "counter",
+      "term_zh": "字腔",
+      "definition": "字母笔画围合出的内部空白，如 o 的内圈。字腔大小直接影响辨识度与视觉重量。",
+      "visual_criteria": "字母封闭区域的面积与形状。",
+      "prompt_usage": "open counters",
+      "aliases": ["字怀", "内白"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "stroke contrast",
+      "term_zh": "笔画粗细对比",
+      "definition": "同一字母内粗笔画与细笔画的差异程度。高对比（Didone）显优雅，低对比（无衬线）显中性。",
+      "visual_criteria": "同一字母竖笔与横笔的宽度差。",
+      "prompt_usage": "high stroke contrast",
+      "aliases": ["笔画对比"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "kerning",
+      "term_zh": "字偶距",
+      "definition": "两个特定字符之间的间距微调，是专业排版与业余排版的直接分界。",
+      "visual_criteria": "观察 AV、To、Wa 这类组合是否视觉等距。",
+      "prompt_usage": "tight kerning",
+      "aliases": ["字对间距"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "tracking",
+      "term_zh": "字距",
+      "definition": "整段文字统一的字符间距，标题通常收紧、小字通常放松。",
+      "visual_criteria": "字符之间的平均间隔是否均匀且与字号匹配。",
+      "prompt_usage": "wide tracking on the headline",
+      "aliases": ["字母间距"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "leading",
+      "term_zh": "行距",
+      "definition": "相邻两行基线之间的距离，决定多行文字块的呼吸感与可读性。",
+      "visual_criteria": "两行文字的基线间隔相对字号的倍数。",
+      "prompt_usage": "generous leading",
+      "aliases": ["行间"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "Didone",
+      "term_zh": "迪多体",
+      "definition": "18 世纪末形成的极致粗细对比衬线体（如 Bodoni、Didot），笔画对比极大、衬线为无括号的细线。",
+      "visual_criteria": "竖笔极粗、横笔极细、衬线呈细直条状。",
+      "prompt_usage": "Didone serif display type",
+      "aliases": ["现代衬线"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "grotesque sans",
+      "term_zh": "怪诞无衬线",
+      "definition": "19 世纪出现的早期无衬线体类别，中性、骨架均匀，是现代主义排版的主力。",
+      "visual_criteria": "笔画等粗、端点平切、字形中性无明显个性。",
+      "prompt_usage": "grotesque sans-serif",
+      "aliases": ["新怪诞体"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "geometric sans",
+      "term_zh": "几何无衬线",
+      "definition": "以圆与直线为骨架构造的无衬线体（如 Futura），圆形的 o 接近正圆。",
+      "visual_criteria": "o、e 等字母呈接近正圆的几何形，笔画等粗。",
+      "prompt_usage": "geometric sans-serif",
+      "aliases": ["几何体"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "slab serif",
+      "term_zh": "粗衬线体",
+      "definition": "衬线厚重呈板状、无括号过渡的字体类别，视觉冲击强，适合海报标题。",
+      "visual_criteria": "笔画末端有厚实的矩形衬线。",
+      "prompt_usage": "heavy slab serif",
+      "aliases": ["方衬线"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "International Typographic Style",
+      "term_zh": "国际主义排版风格 / 瑞士风格",
+      "definition": "20 世纪 50 年代瑞士发展出的排版体系：无衬线体、模数网格、非对称布局、左对齐、大量留白。",
+      "visual_criteria": "严格网格、左对齐文字块、无装饰、单色或双色、大面积空白。",
+      "prompt_usage": "Swiss style typographic poster",
+      "aliases": ["瑞士风格", "Swiss Style"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "logotype",
+      "term_zh": "字标",
+      "definition": "以文字（通常是品牌名）本身作为标识的设计，强调字体定制与字距调整。",
+      "visual_criteria": "标识完全由文字构成，无独立图形符号。",
+      "prompt_usage": "custom logotype",
+      "aliases": ["标准字"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "lockup",
+      "term_zh": "组合锁定",
+      "definition": "图形标与字标按固定比例与间距组合成的整体标识，比例一旦确定不可随意改动。",
+      "visual_criteria": "图形与文字保持固定相对位置与大小比例。",
+      "prompt_usage": "logotype and symbol lockup",
+      "aliases": ["标志组合"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "chrome typography",
+      "term_zh": "铬金属字体",
+      "definition": "表面为镜面铬反射的字体处理，源自 80 年代金属字与当代 Y2K 视觉，需环境反射才成立。",
+      "visual_criteria": "字面上有清晰的水平环境反射带与高对比高光。",
+      "prompt_usage": "chrome 3D typography with reflections",
+      "aliases": ["液态金属字"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "neon glow",
+      "term_zh": "霓虹发光",
+      "definition": "模拟霓虹灯管的发光效果：字芯近白、外圈有色扩散、周围有光溢出到背景。",
+      "visual_criteria": "笔画中心最亮、向外衰减出彩色光晕，背景被照亮。",
+      "prompt_usage": "neon tube glow lettering",
+      "aliases": ["灯管字"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "letterpress impression",
+      "term_zh": "凸版压痕",
+      "definition": "活版印刷在纸张上留下的凹痕与油墨堆积边缘，是纸品设计的高价值质感信号。",
+      "visual_criteria": "文字边缘有轻微内凹阴影与油墨厚度不均。",
+      "prompt_usage": "letterpress debossed typography on textured paper",
+      "aliases": ["压凹印刷"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "visual hierarchy",
+      "term_zh": "视觉层级",
+      "definition": "通过字号、字重、色彩、位置建立的信息优先级，读者按此顺序接收内容。",
+      "visual_criteria": "眯眼后仍能读出主标题，次要信息退让。",
+      "prompt_usage": "clear typographic hierarchy",
+      "aliases": ["信息层级"],
+      "confidence_grade": "A"
+    }
+  ],
+  "keywords": [
+    { "tag": "bold condensed sans-serif headline", "zh": "粗压缩无衬线主标题", "ir_category": "quality_style", "when": "主标题笔画粗、字宽窄、占幅大", "avoid_when": "细体或扩展字宽" },
+    { "tag": "Didone serif display type", "zh": "迪多体展示字", "ir_category": "quality_style", "when": "极强笔画对比 + 细直衬线", "avoid_when": "等粗笔画或粗衬线" },
+    { "tag": "geometric sans-serif", "zh": "几何无衬线", "ir_category": "quality_style", "when": "字形接近正圆、笔画等粗", "avoid_when": "书写感或高对比字体" },
+    { "tag": "heavy slab serif", "zh": "粗衬线体", "ir_category": "quality_style", "when": "末端有厚实矩形衬线", "avoid_when": "无衬线或细衬线" },
+    { "tag": "Swiss style typographic poster", "zh": "瑞士风格海报", "ir_category": "composition", "when": "严格网格 + 左对齐 + 大留白", "avoid_when": "自由错位或装饰性排版" },
+    { "tag": "grid based layout", "zh": "网格版式", "ir_category": "composition", "when": "元素对齐到可辨识的栏与模数", "avoid_when": "无对齐规则的散点排布" },
+    { "tag": "asymmetric layout", "zh": "非对称版式", "ir_category": "composition", "when": "视觉重量偏一侧、留白不均", "avoid_when": "严格居中对称" },
+    { "tag": "generous negative space", "zh": "大面积留白", "ir_category": "composition", "when": "空白占比超过 40%", "avoid_when": "元素填满画面" },
+    { "tag": "tight tracking on display text", "zh": "标题收紧字距", "ir_category": "composition", "when": "大字号文字字距明显小于常规", "avoid_when": "小字或需要放松字距时" },
+    { "tag": "chrome 3D typography", "zh": "铬金属立体字", "ir_category": "appearance", "when": "字面有镜面反射与强高光", "avoid_when": "哑光纯色文字" },
+    { "tag": "brushed metal lettering", "zh": "拉丝金属字", "ir_category": "appearance", "when": "表面有细密平行拉丝纹理", "avoid_when": "镜面或磨砂质感" },
+    { "tag": "frosted glass typography", "zh": "磨砂玻璃字", "ir_category": "appearance", "when": "字面半透、背后有模糊透出", "avoid_when": "不透明材质" },
+    { "tag": "neon tube glow lettering", "zh": "霓虹灯管字", "ir_category": "quality_style", "when": "字芯亮、外圈彩色扩散、照亮背景", "avoid_when": "无发光或印刷质感" },
+    { "tag": "embossed 3D lettering", "zh": "浮雕立体字", "ir_category": "quality_style", "when": "文字有凸起高度与方向一致的投影", "avoid_when": "纯平面文字" },
+    { "tag": "letterpress debossed typography", "zh": "凸版压凹文字", "ir_category": "quality_style", "when": "纸面上有压痕与油墨堆积", "avoid_when": "屏幕发光质感" },
+    { "tag": "high contrast duotone palette", "zh": "高对比双色配色", "ir_category": "lighting_color", "when": "仅两种主色、明度反差大", "avoid_when": "多色渐变" },
+    { "tag": "monochrome with one accent color", "zh": "单色加一个强调色", "ir_category": "lighting_color", "when": "画面绝大部分中性色、局部一个高饱和色", "avoid_when": "全彩画面" }
+  ],
+  "suppression": [
+    "photograph",
+    "realistic photo",
+    "person portrait",
+    "landscape scenery",
+    "blurry text",
+    "gibberish letters",
+    "misspelled text",
+    "illegible typography",
+    "watermark"
+  ],
+  "compile": {
+    "slot_order_override": ["quality_style", "composition", "lighting_color", "appearance"],
+    "must_keep": ["quality_style.typeface_class", "composition.layout_grid", "quality_style.effect_stack"],
+    "budget_hint": { "positive_terms": 60, "lexicon_terms": 8 },
+    "note": "字体类提示词必须把\"字体类别\"放在最前，且抑制词要显式挡掉 blurry text 与 gibberish letters —— 下游模型最容易在文字上崩坏，这两个词对成图率影响最大。"
+  },
+  "quality_gates": [
+    "必须给出字体类别 + 字重/字宽 + 版式网格三项，缺一项进 uncertainties。",
+    "字体名称只能给类别，不得凭空断言具体字体名（除非画面中确有该字体的独有特征）。",
+    "排版描述必须落到对齐方式与网格，不得只写\"排版好看\"。",
+    "文字材质与特效不得同时滥用：纯色平面文字不得写 chrome 或 embossed。",
+    "抑制词必须包含 blurry text 与 gibberish letters。"
+  ],
+  "sources": [
+    { "title": "内部结构定义：lib/config/categories.js", "url": "file://lib/config/categories.js", "note": "ir_category 取值来源。" },
+    { "title": "字体度量术语（x-height / cap height / counter / kerning / tracking / leading）为排版学通行定义，置信度 A；Didone、grotesque、geometric sans、slab serif 为字体分类学通行定义，置信度 A", "url": "file://docs/rules/STANDARD_RULE_LIBRARY.md", "note": "无单一权威在线来源可用时按通行定义收录，并在 confidence_grade 标注。" }
+  ]
+}

@@ -1,0 +1,371 @@
+{
+  "schema_version": "1.0",
+  "config_id": "general",
+  "kind": "image_type_rule",
+  "code": "T0-GEN",
+  "marker": "[T0-GEN]",
+  "display_name": "通用全能拆解",
+  "scope": "不属于其余六类、或证据不足以判定专类的图。也用于用户明确要求\"不限类型、按通用框架拆\"的场合。这一类的目标不是判得准，而是不漏维度：宁可多问一句，不可静默跳过。",
+  "exclusions": [
+    "已经能被 T1..T6 中任一类以 ≥ min_score 判定的图（应走专类，不走兜底）",
+    "纯文字截图、纯 UI 界面、表格与图表（信息图不属于视觉提示词逆向的输入范围）"
+  ],
+  "priority": 10,
+  "min_score": 0,
+  "min_signals": 0,
+  "secondary_threshold": 0.6,
+  "identification": {
+    "summary": "没有一类能拿到 0.45 分以上，或最高分与次高分互相否决 —— 按通用八维拆解。",
+    "signals": [
+      {
+        "id": "T0-S1",
+        "label": "类型证据不足",
+        "observable": "画面既没有明确的光学成像特征，也没有稳定的笔触体系、三维材质体系或文字主视觉；风格处于混合或低信息状态。",
+        "weight": 0.4
+      },
+      {
+        "id": "T0-S2",
+        "label": "混合媒介",
+        "observable": "同一画面里同时出现照片质感区域与手绘区域（拼贴、二次创作、AI 混合输出），无法用单一媒介解释全图。",
+        "weight": 0.3
+      },
+      {
+        "id": "T0-S3",
+        "label": "主体与风格均不突出",
+        "observable": "画面主体占比小于画面 1/5，且风格特征弱于噪点级；构图与光影都没有明确的设计意图。",
+        "weight": 0.2
+      },
+      {
+        "id": "T0-S4",
+        "label": "用户显式要求通用框架",
+        "observable": "任务上下文指定按通用八维分析，或用户要求先给一份不依赖类型的基线描述。",
+        "weight": 0.1
+      }
+    ],
+    "anti_signals": [
+      {
+        "id": "T0-X1",
+        "label": "存在明确光学缺陷",
+        "observable": "可见暗角、色差、镜头畸变、真实传感器噪点之一，且不是刻意模仿 —— 应判 photography。",
+        "weight": 0.3
+      },
+      {
+        "id": "T0-X2",
+        "label": "文字主导版面",
+        "observable": "文字占据视觉重心，版式本身构成主视觉 —— 应判 poster-typography。",
+        "weight": 0.3
+      },
+      {
+        "id": "T0-X3",
+        "label": "可复现角色设计",
+        "observable": "存在三视图、表情表、比例尺或明确的\"可复用角色\"意图 —— 应判 ip-character。",
+        "weight": 0.25
+      }
+    ]
+  },
+  "dimensions": [
+    {
+      "id": "D1",
+      "name": "主体内容与场景设定",
+      "ir_category": "subject",
+      "slot": "subject.subject_scene",
+      "required": true,
+      "question": "画面的主体是什么，它处在什么场景与情境里？",
+      "observable_criteria": [
+        "主体必须用\"可数的名词\"描述：一个/两个/一群，而不是\"一些元素\"",
+        "场景要给出空间属性：室内/室外、封闭/开阔、真实/虚构",
+        "情境只写能从画面推断的：正在做什么、与谁在一起、处于什么状态"
+      ],
+      "forbidden": [
+        "不要写画面里看不见的情节（\"她刚失恋\"）",
+        "不要用形容词代替主体（\"一个美丽的场景\"）"
+      ],
+      "fallback_uncertainty": "entity_ambiguous"
+    },
+    {
+      "id": "D2",
+      "name": "艺术风格与视觉流派",
+      "ir_category": "quality_style",
+      "slot": "quality_style.style_genre",
+      "required": true,
+      "question": "这张图属于什么风格谱系？判断依据是笔触、媒介还是渲染特征？",
+      "observable_criteria": [
+        "先判媒介（摄影/绘画/三维/平面），再判流派（写实/表现/装饰/极简）",
+        "流派名必须是可被检索的既有名词，不要自创复合词",
+        "风格判断必须给出至少一条像素级依据"
+      ],
+      "forbidden": [
+        "不要用\"高级感\"\"氛围感\"这类无法落到参数的词作为风格结论",
+        "不要仅凭题材推风格（有古装不等于国风）"
+      ],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D3",
+      "name": "构图逻辑与镜头视角",
+      "ir_category": "composition",
+      "slot": "composition.framing_logic",
+      "required": true,
+      "question": "画面怎么分割？主体放在哪个位置？观看角度是什么？",
+      "observable_criteria": [
+        "给出分割方式：三分/居中/对角线/对称/框架式/留白式",
+        "给出主体位置：左/右/上/下/中央，占画幅比例",
+        "给出视角：平视/俯视/仰视/鸟瞰/荷兰角，以及机位高度"
+      ],
+      "forbidden": ["不要只写\"构图精美\"，必须指明是哪一种构图法"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D4",
+      "name": "光影结构与照明方式",
+      "ir_category": "lighting_color",
+      "slot": "lighting_color.lighting_structure",
+      "required": true,
+      "question": "光从哪来？几个光源？软硬如何？明暗对比强不强？",
+      "observable_criteria": [
+        "给出主光方向（相对镜头：左前/右前/顶/逆/侧逆）",
+        "给出光源数量与性质：单光源/双光源/环境漫射/混合",
+        "给出软硬判据：阴影边缘锐利=硬光，过渡宽=软光",
+        "给出光比：高对比（>1:8）/中（1:4~1:8）/低（<1:4）"
+      ],
+      "forbidden": ["不要写\"打光很好看\"，必须落到方向、软硬、光比三要素"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D5",
+      "name": "色彩体系与情绪氛围",
+      "ir_category": "lighting_color",
+      "slot": "lighting_color.color_system",
+      "required": true,
+      "question": "主色是什么？配色关系是什么？色彩在传达什么情绪？",
+      "observable_criteria": [
+        "给出主色与辅色的具体色相名（不要只说\"暖色调\"，要说\"琥珀色主调 + 青灰辅调\"）",
+        "给出配色关系：单色/邻近/互补/分裂互补/三角",
+        "给出饱和度与明度区间：高饱和高对比 / 低饱和低对比",
+        "情绪结论必须由色彩关系推出，不能凭感觉"
+      ],
+      "forbidden": ["不要用\"电影感调色\"这类未定义词代替具体色彩关系"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D6",
+      "name": "材质表现与纹理细节",
+      "ir_category": "appearance",
+      "slot": "appearance.material_texture",
+      "required": true,
+      "question": "画面里能认出哪些材质？它们的表面反应是怎样的？",
+      "observable_criteria": [
+        "逐主体列材质：织物/金属/玻璃/皮肤/石材/塑料/木",
+        "给出表面反应：镜面反射/漫反射/半透/次表面散射",
+        "给出纹理尺度：细密（布纹）/中（木纹）/粗（岩石）",
+        "材质的判断要落到高光形状与阴影过渡上"
+      ],
+      "forbidden": ["不要给画面里不存在的材质（\"丝绸\"用在棉布上）"],
+      "fallback_uncertainty": "insufficient_detail"
+    },
+    {
+      "id": "D7",
+      "name": "画面层次与视觉重点",
+      "ir_category": "composition",
+      "slot": "composition.visual_hierarchy",
+      "required": true,
+      "question": "眼睛第一眼落在哪？前中后景怎么分？",
+      "observable_criteria": [
+        "指出第一视觉重点及其位置，并说明为什么是它（对比/亮度/色彩/清晰度）",
+        "给出前景-中景-背景的分层，以及各层是否清晰",
+        "给出视觉动线：视线从哪走到哪"
+      ],
+      "forbidden": ["不要把所有元素都说成重点"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D8",
+      "name": "渲染质量与技术特征",
+      "ir_category": "quality_style",
+      "slot": "quality_style.technical_signature",
+      "required": true,
+      "question": "这张图的技术完成度如何？有什么可复现的技术痕迹？",
+      "observable_criteria": [
+        "给出分辨率观感与锐度：全幅清晰 / 局部柔化 / 整体软化",
+        "给出噪点与颗粒：无 / 细颗粒 / 明显颗粒",
+        "给出后期痕迹：高光滚降、暗部提亮、色散、加锐",
+        "给出可能的生成或拍摄技术特征（只写有证据的）"
+      ],
+      "forbidden": ["不要凭画面猜具体设备型号与软件版本"],
+      "fallback_uncertainty": "unsupported_observation"
+    }
+  ],
+  "lexicon": [
+    {
+      "term_en": "visual hierarchy",
+      "term_zh": "视觉层级",
+      "definition": "画面元素按重要性排出的阅读顺序，由大小、对比、亮度、色彩饱和度、清晰度共同决定。",
+      "visual_criteria": "眯眼观察时仍然最先跳出来的那块区域，就是第一层级。",
+      "prompt_usage": "clear visual hierarchy",
+      "aliases": ["层级关系", "视觉优先级"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "rule of thirds",
+      "term_zh": "三分法",
+      "definition": "把画幅横竖各三等分，主体或关键线落在分割线或交点上，以获得平衡而不呆板的构图。",
+      "visual_criteria": "画面里能找到一条明显的横线或竖线贴近 1/3 或 2/3 位置。",
+      "prompt_usage": "rule of thirds composition",
+      "aliases": ["九宫格构图"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "negative space",
+      "term_zh": "留白 / 负空间",
+      "definition": "主体之外、信息量低但仍承担构图功能的区域。留白不是空的，它决定画面的呼吸感与主体权重。",
+      "visual_criteria": "主体周围存在大面积低细节、低对比的区域。",
+      "prompt_usage": "generous negative space",
+      "aliases": ["负形", "空白区"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "leading lines",
+      "term_zh": "引导线",
+      "definition": "画面中把视线从边缘引向主体的线性元素，可以是道路、栏杆、光影边界、人体姿态线。",
+      "visual_criteria": "能找到一条从画面边缘出发、终止于主体的连续线条或明暗边界。",
+      "prompt_usage": "leading lines toward subject",
+      "aliases": ["视觉引导线"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "chiaroscuro",
+      "term_zh": "明暗对照法",
+      "definition": "用强烈明暗反差塑造体积与戏剧性的照明传统，源自文艺复兴绘画，后被摄影与电影继承。",
+      "visual_criteria": "主体只有一部分被照亮，其余落入深阴影，明暗边界清晰。",
+      "prompt_usage": "chiaroscuro lighting",
+      "aliases": ["明暗法"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "color harmony",
+      "term_zh": "色彩和谐",
+      "definition": "色相之间按色轮关系组织（单色、邻近、互补、分裂互补、三角），使画面色彩有秩序而不杂乱。",
+      "visual_criteria": "把画面主要色相标在色轮上，能看出它们落在某个固定关系上。",
+      "prompt_usage": "harmonious color palette",
+      "aliases": ["配色关系"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "subsurface scattering (SSS)",
+      "term_zh": "次表面散射",
+      "definition": "光进入半透明材质后在内部散射再透出的现象，是皮肤、蜡、玉石、牛奶呈现\"通透感\"的物理来源。",
+      "visual_criteria": "背光或侧逆光下，边缘出现偏红或偏暖的透光带。",
+      "prompt_usage": "subsurface scattering on skin",
+      "aliases": ["SSS", "透光感"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "specular highlight",
+      "term_zh": "高光反射",
+      "definition": "光源在光滑表面上的镜面反射，形状由光源形状与表面曲率共同决定。",
+      "visual_criteria": "材质上出现形状明确、边缘锐利的亮斑。",
+      "prompt_usage": "sharp specular highlights",
+      "aliases": ["镜面高光"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "atmospheric perspective",
+      "term_zh": "空气透视",
+      "definition": "距离越远，景物对比度越低、饱和度越低、色相越偏冷偏蓝，是人眼判断纵深的核心线索。",
+      "visual_criteria": "远处物体的黑白反差明显小于近处，且整体蒙上一层冷灰。",
+      "prompt_usage": "atmospheric perspective",
+      "aliases": ["大气透视", "空气远近法"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "depth of field (DOF)",
+      "term_zh": "景深",
+      "definition": "合焦平面前后可接受的清晰范围。景深浅则背景虚化强，景深深则前后都清晰。",
+      "visual_criteria": "主体清晰、背景模糊且模糊程度随距离平滑增加 = 浅景深。",
+      "prompt_usage": "shallow depth of field",
+      "aliases": ["DOF", "虚实关系"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "key-to-fill ratio",
+      "term_zh": "主辅光比",
+      "definition": "主光与辅光的强度比，决定阴影的深浅，是控制画面情绪硬度的核心参数。",
+      "visual_criteria": "阴影侧的亮度与受光侧亮度的差距，差距越大光比越高。",
+      "prompt_usage": "high key-to-fill ratio",
+      "aliases": ["光比"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "halation",
+      "term_zh": "光晕 / 卤光",
+      "definition": "强光穿过胶片片基或镜头后在亮部边缘产生的红色扩散光晕，是胶片感的重要标志。",
+      "visual_criteria": "高光边缘出现偏红偏橙的柔和扩散，而非锐利切边。",
+      "prompt_usage": "subtle halation on highlights",
+      "aliases": ["光晕扩散"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "tonal range",
+      "term_zh": "影调范围",
+      "definition": "画面从最暗到最亮的亮度跨度。高动态范围保留更多两端细节，低动态范围则以牺牲一端换取对比。",
+      "visual_criteria": "看暗部是否还有细节、亮部是否死白。",
+      "prompt_usage": "wide tonal range",
+      "aliases": ["动态范围", "影调"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "motif",
+      "term_zh": "母题",
+      "definition": "画面中反复出现的形状、色彩或符号，用于建立内部呼应。",
+      "visual_criteria": "同一形状或色彩在画面不同位置重复出现至少两次。",
+      "prompt_usage": "recurring visual motif",
+      "aliases": ["重复元素"],
+      "confidence_grade": "B"
+    }
+  ],
+  "keywords": [
+    { "tag": "clear visual hierarchy", "zh": "清晰视觉层级", "ir_category": "composition", "when": "画面第一眼重点明确、次要元素退让时", "avoid_when": "画面刻意扁平、无主次时" },
+    { "tag": "rule of thirds composition", "zh": "三分构图", "ir_category": "composition", "when": "主体落在三分线或交点上", "avoid_when": "严格居中对称构图" },
+    { "tag": "centered symmetrical composition", "zh": "居中对称构图", "ir_category": "composition", "when": "中轴线两侧近似镜像", "avoid_when": "画面存在明显非对称重量" },
+    { "tag": "generous negative space", "zh": "大面积留白", "ir_category": "composition", "when": "主体周围有超过 40% 的低细节区域", "avoid_when": "画面元素填满、密不透风" },
+    { "tag": "leading lines toward subject", "zh": "引导线指向主体", "ir_category": "composition", "when": "能看出从边缘到主体的连续线", "avoid_when": "没有明确线性元素" },
+    { "tag": "chiaroscuro lighting", "zh": "明暗对照照明", "ir_category": "lighting_color", "when": "明暗反差强烈、阴影占比大", "avoid_when": "均匀漫射光、无明显阴影" },
+    { "tag": "soft diffused lighting", "zh": "柔和漫射光", "ir_category": "lighting_color", "when": "阴影边缘宽而柔、过渡平滑", "avoid_when": "硬光、锐利阴影" },
+    { "tag": "high key-to-fill ratio", "zh": "高光比", "ir_category": "lighting_color", "when": "受光侧与阴影侧亮度差超过 3 档", "avoid_when": "低对比、平光" },
+    { "tag": "harmonious color palette", "zh": "和谐配色", "ir_category": "lighting_color", "when": "主色相之间呈明确色轮关系", "avoid_when": "色彩刻意冲突、杂乱" },
+    { "tag": "muted desaturated palette", "zh": "低饱和配色", "ir_category": "lighting_color", "when": "整体饱和度明显偏低", "avoid_when": "高饱和、霓虹色" },
+    { "tag": "shallow depth of field", "zh": "浅景深", "ir_category": "camera", "when": "背景虚化明显、主体单独清晰", "avoid_when": "前后景都清晰" },
+    { "tag": "atmospheric perspective", "zh": "空气透视", "ir_category": "background", "when": "远处景物对比度与饱和度下降", "avoid_when": "远景与近景反差一致（平面化处理）" },
+    { "tag": "subsurface scattering", "zh": "次表面散射", "ir_category": "appearance", "when": "半透明材质在逆光下透出暖色", "avoid_when": "完全不透明的硬质表面" },
+    { "tag": "sharp specular highlights", "zh": "锐利镜面高光", "ir_category": "appearance", "when": "光滑表面出现形状明确的高光斑", "avoid_when": "哑光、粗糙表面" },
+    { "tag": "subtle film grain", "zh": "轻微胶片颗粒", "ir_category": "quality_style", "when": "可见细密均匀的颗粒层", "avoid_when": "数码洁净画面" },
+    { "tag": "wide tonal range", "zh": "宽影调范围", "ir_category": "quality_style", "when": "暗部与亮部都保留细节", "avoid_when": "高反差剪影式处理" }
+  ],
+  "suppression": [
+    "watermark",
+    "text overlay",
+    "signature",
+    "blurry",
+    "jpeg artifacts",
+    "extra fingers",
+    "deformed hands",
+    "low resolution"
+  ],
+  "compile": {
+    "slot_order_override": [],
+    "must_keep": ["composition.framing_logic", "lighting_color.lighting_structure", "subject.subject_scene"],
+    "budget_hint": { "positive_terms": 60, "lexicon_terms": 6 },
+    "note": "兜底类型的编译目标是\"不漏\"，所以八个维度全部保留，不因预算紧张裁剪。宁可提示词长一点，也不要让下游模型缺少光影或构图信息。"
+  },
+  "quality_gates": [
+    "八个维度全部有结论；任何一项看不清时写入 uncertainties 并说明原因，不得留空。",
+    "每个维度结论至少引用一条可观察判据（方向、比例、色相、材质名），不得只给评价性形容词。",
+    "正向提示词与抑制提示词不出现同一概念（例如正向写 soft light、抑制写 hard shadow 之外不要重复 soft）。",
+    "提示词里不得出现画面中不存在的物体、材质或人物动作。",
+    "不确定项必须显式标注，不得用\"大约\"\"似乎\"混过去而不进 uncertainties。"
+  ],
+  "sources": [
+    { "title": "内部结构定义：lib/config/categories.js（INTERNAL_CATEGORIES 与 DEFAULT_POSITIVE_ORDER）", "url": "file://lib/config/categories.js", "note": "本规则库的 ir_category 取值只允许来自这里，不允许新造分类。" },
+    { "title": "不确定性代码定义：lib/ir/schema.js（UNCERTAINTY_CODES）", "url": "file://lib/ir/schema.js", "note": "fallback_uncertainty 的枚举来源。" }
+  ]
+}

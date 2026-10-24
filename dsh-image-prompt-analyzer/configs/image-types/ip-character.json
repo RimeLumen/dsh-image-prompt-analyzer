@@ -1,0 +1,459 @@
+{
+  "schema_version": "1.0",
+  "config_id": "ip-character",
+  "kind": "image_type_rule",
+  "code": "T4-IP",
+  "marker": "[T4-IP]",
+  "display_name": "IP 角色反推",
+  "scope": "以\"可复用的角色\"为产出目的的画面：角色设定图（三视图 / 表情表 / 比例尺）、潮玩与盲盒、吉祥物、游戏与动画的角色立绘。判定核心不是\"画面里有人\"，而是\"这个角色可以被重复画出来\"—— 存在为一致性服务的视觉锚点（固定配色分块、固定发型轮廓、固定配饰）。",
+  "exclusions": [
+    "普通人像摄影（人物是真人、不存在设计化的角色设定）→ 走 photography",
+    "纯叙事插画中的人物（无需复用的场景角色）→ 走 illustration",
+    "以文字与图形为主的品牌视觉（无角色主体）→ 走 poster-typography"
+  ],
+  "priority": 55,
+  "min_score": 0.45,
+  "min_signals": 3,
+  "secondary_threshold": 0.6,
+  "identification": {
+    "summary": "角色有设计化的可复用锚点（比例、配色分块、发型轮廓、标志配饰）—— 判 IP 角色。",
+    "signals": [
+      {
+        "id": "T4-S1",
+        "label": "设计化比例",
+        "observable": "头身比偏离写实（Q 版 1:2、1:3，或夸张的 8 头身英雄比例），且比例被刻意固定。",
+        "weight": 0.22
+      },
+      {
+        "id": "T4-S2",
+        "label": "配色分块",
+        "observable": "角色由少量（通常 3-5 个）高辨识度色块构成，色块边界清晰、位置固定，形成可记忆的色彩签名。",
+        "weight": 0.2
+      },
+      {
+        "id": "T4-S3",
+        "label": "标志性配饰或纹样",
+        "observable": "存在一个可被单独提取复用的识别元素：头饰、眼罩、尾巴、徽记、特定纹样。",
+        "weight": 0.18
+      },
+      {
+        "id": "T4-S4",
+        "label": "多视角或设定表结构",
+        "observable": "画面含正面/侧面/背面多视角、表情分格、比例尺或色卡，属于设定图而非单幅作品。",
+        "weight": 0.16
+      },
+      {
+        "id": "T4-S5",
+        "label": "玩具化工艺痕迹",
+        "observable": "存在软胶（vinyl）分模线、可动关节、亚克力底座、涂装高光等实体玩具的工艺特征。",
+        "weight": 0.14
+      },
+      {
+        "id": "T4-S6",
+        "label": "剪影可读性",
+        "observable": "把角色填成纯黑剪影后仍能辨认出是谁（轮廓有独特凸起或负形）。",
+        "weight": 0.1
+      }
+    ],
+    "anti_signals": [
+      {
+        "id": "T4-X1",
+        "label": "写实真人",
+        "observable": "人物比例写实、皮肤有真实瑕疵与毛孔、无设计化色彩分块。",
+        "weight": 0.3,
+        "veto": true
+      },
+      {
+        "id": "T4-X2",
+        "label": "纯叙事场景",
+        "observable": "角色完全服务于场景叙事，无任何为复用服务的设计锚点。",
+        "weight": 0.25
+      },
+      {
+        "id": "T4-X3",
+        "label": "无角色主体",
+        "observable": "画面中没有可辨识的角色或生物形态。",
+        "weight": 0.35,
+        "veto": true
+      }
+    ]
+  },
+  "dimensions": [
+    {
+      "id": "D1",
+      "name": "角色定位与设定",
+      "ir_category": "character",
+      "slot": "character.role_archetype",
+      "required": true,
+      "question": "这个角色是什么身份？属于哪个原型？目标受众是谁？",
+      "observable_criteria": [
+        "原型：吉祥物/伙伴型/英雄型/反派型/治愈型/怪诞型",
+        "身份线索：服装职业化元素、道具、场景暗示",
+        "年龄感：幼态（大眼圆脸）/少年/成年/无年龄感（拟物）",
+        "受众取向：儿童向（高饱和、圆润）/潮玩向（低饱和、造型化）/二次元向"
+      ],
+      "forbidden": ["不要给角色编造完整背景故事，只写画面能支撑的设定"],
+      "fallback_uncertainty": "entity_ambiguous"
+    },
+    {
+      "id": "D2",
+      "name": "头身比例与体块",
+      "ir_category": "character",
+      "slot": "character.proportion",
+      "required": true,
+      "question": "头身比是多少？体块怎么概括？重心在哪？",
+      "observable_criteria": [
+        "头身比：1:1（大头娃娃）/1:2（Q 版）/1:3（半 Q）/1:6-1:8（写实向）",
+        "体块概括：球形、圆柱、方块、水滴形的组合方式",
+        "重心位置与站姿稳定性（潮玩常刻意前倾或重心偏移）",
+        "四肢比例：短粗（可爱）/修长（优雅）"
+      ],
+      "forbidden": ["不要在全身未完整入画时断言精确头身比"],
+      "fallback_uncertainty": "out_of_frame"
+    },
+    {
+      "id": "D3",
+      "name": "五官与面部结构",
+      "ir_category": "character",
+      "slot": "character.face_structure",
+      "required": true,
+      "question": "五官怎么分布？眼睛占多大？面部有哪些简化或夸张？",
+      "observable_criteria": [
+        "眼位：偏高（幼态）或偏低；眼距：宽（萌）或窄",
+        "眼型：圆形/杏仁形/细长/点状；有无高光点与睫毛",
+        "嘴部：省略/一条线/小三角/完整唇形",
+        "面部简化：有无鼻子、有无耳廓、有无腮红",
+        "五官间距与面部留白比例"
+      ],
+      "forbidden": ["不要描述画面中不可见的脸部细节"],
+      "fallback_uncertainty": "insufficient_detail"
+    },
+    {
+      "id": "D4",
+      "name": "发型与头部特征",
+      "ir_category": "character",
+      "slot": "character.hair_design",
+      "required": true,
+      "question": "头发什么形状？轮廓有什么独特凸起？有没有非人类头部特征？",
+      "observable_criteria": [
+        "发型轮廓：这是角色最强的剪影识别点，必须描述外形而非\"长发\"",
+        "发束分组方式：块状（潮玩）/细丝（插画）/几何切面（低模）",
+        "非人类特征：兽耳、角、触角、机械部件、头饰",
+        "发色与渐变，以及是否有高光带"
+      ],
+      "forbidden": ["不要只写\"可爱的发型\"，必须给轮廓特征"],
+      "fallback_uncertainty": "insufficient_detail"
+    },
+    {
+      "id": "D5",
+      "name": "服装与配饰",
+      "ir_category": "clothing",
+      "slot": "clothing.outfit_design",
+      "required": true,
+      "question": "穿什么？有哪些固定配饰？服装如何配合角色定位？",
+      "observable_criteria": [
+        "服装类型与结构：连体/分体、长袖短袖、裙裤、外套层次",
+        "风格谱系：机能/学院/国风/街头/童话/职业装",
+        "固定配饰清单：每个配饰的材质与位置（这是复用时最易丢失的信息）",
+        "服装上的标志元素：徽记、条纹、滚边"
+      ],
+      "forbidden": ["不要给角色加画面中不存在的配饰"],
+      "fallback_uncertainty": "insufficient_detail"
+    },
+    {
+      "id": "D6",
+      "name": "配色体系与色彩分色",
+      "ir_category": "character",
+      "slot": "character.color_blocking",
+      "required": true,
+      "question": "主色是哪几个？色块怎么分布？面积比是多少？",
+      "observable_criteria": [
+        "主色 1-2 个 + 辅色 1-2 个 + 点缀色 1 个，给出具体色相",
+        "色块分布位置：头部/躯干/四肢/配饰各是什么色",
+        "面积比：主色约占 60%、辅色 30%、点缀 10%",
+        "色彩关系：互补、邻近、或高明度对比"
+      ],
+      "forbidden": ["不要用\"多彩\"代替具体色相与分布"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D7",
+      "name": "表情与情绪状态",
+      "ir_category": "expression",
+      "slot": "expression.expression_state",
+      "required": true,
+      "question": "什么表情？情绪强度多大？有没有表情分格？",
+      "observable_criteria": [
+        "基础表情：中性/微笑/大笑/惊讶/生气/困惑/害羞",
+        "情绪强度：微表情还是夸张变形",
+        "符号化表现：汗滴、怒筋、泪滴、腮红斜线",
+        "若有表情表，列出各格表情及其差异点"
+      ],
+      "forbidden": ["不要推断角色的内心独白"],
+      "fallback_uncertainty": "emotion_inferred"
+    },
+    {
+      "id": "D8",
+      "name": "动作与姿态",
+      "ir_category": "pose_action",
+      "slot": "pose_action.pose_gesture",
+      "required": true,
+      "question": "什么姿势？手脚怎么摆？重心和动势如何？",
+      "observable_criteria": [
+        "基础姿态：站立/坐/蹲/跳跃/奔跑/悬浮",
+        "手部：张开/握拳/持物/比心/插兜，指数量是否简化",
+        "动势线：从头顶到支撑脚的一条主曲线，判断是静态还是动态",
+        "视角：正面/侧面/四分之三/背面（设定图常并列多视角）"
+      ],
+      "forbidden": ["不要把不可见的动作补全（背面视角不要写表情）"],
+      "fallback_uncertainty": "action_inferred"
+    },
+    {
+      "id": "D9",
+      "name": "材质与工艺",
+      "ir_category": "appearance",
+      "slot": "appearance.material_finish",
+      "required": true,
+      "question": "角色表面是什么材质？是实体玩具还是平面绘制？",
+      "observable_criteria": [
+        "实体向：哑光软胶（matte vinyl）、亮面树脂（glossy resin）、搪胶（sofubi）、植绒（flocking）",
+        "表面反应：漫反射为主（哑光）或强高光（亮面），有无次表面透光",
+        "工艺痕迹：分模线、涂装边界、喷枪渐变、贴纸质感",
+        "平面向：赛璐璐平涂、厚涂笔触、水彩晕染"
+      ],
+      "forbidden": ["不要在平面绘制图上写分模线或关节等实体工艺特征"],
+      "fallback_uncertainty": "insufficient_detail"
+    },
+    {
+      "id": "D10",
+      "name": "一致性锚点与复用约束",
+      "ir_category": "quality_style",
+      "slot": "quality_style.consistency_anchor",
+      "required": true,
+      "question": "如果只允许保留 5 个特征来重建这个角色，是哪 5 个？哪些特征一改就不像了？",
+      "observable_criteria": [
+        "列出 3-5 个不可变锚点（发型轮廓、配色分块、标志配饰、眼型、比例）",
+        "指出可变范围（表情、姿态、视角、背景、光影）",
+        "指出易丢失特征（细小的配饰、特定的颜色关系）",
+        "给出\"换视角后仍然成立\"的判断"
+      ],
+      "forbidden": [
+        "不要把可变特征写成锚点（表情与背景不是身份特征）",
+        "不要给出超过 5 个锚点，锚点过多等于没有锚点"
+      ],
+      "fallback_uncertainty": "unsupported_observation"
+    }
+  ],
+  "lexicon": [
+    {
+      "term_en": "character turnaround",
+      "term_zh": "角色三视图 / 转面图",
+      "definition": "同一角色的正面、侧面、背面（常加四分之三视角）并排绘制，用于保证建模与绘制的一致性。行业标准通常为 8 角度（每 45° 一个）。",
+      "visual_criteria": "画面中出现同一角色的多个朝向，比例与配色完全一致。",
+      "prompt_usage": "character turnaround sheet, multiple views",
+      "aliases": ["转面图", "8 角度设定"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "model sheet",
+      "term_zh": "设定表",
+      "definition": "包含多视角、表情、比例尺、配色标注的角色制作文档，是动画与玩具量产的前置物。",
+      "visual_criteria": "画面中有分格、标注线、比例参照或色卡。",
+      "prompt_usage": "character model sheet with annotations",
+      "aliases": ["角色设定表"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "expression sheet",
+      "term_zh": "表情表",
+      "definition": "同一角色的一组表情分格图，用于定义情绪范围与变形幅度。",
+      "visual_criteria": "多个头部并排，表情不同但发型与配色一致。",
+      "prompt_usage": "expression sheet, multiple facial expressions",
+      "aliases": ["表情差分"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "head-to-body ratio",
+      "term_zh": "头身比",
+      "definition": "角色头部高度与全身高度的比例，是决定风格（幼态/写实）与玩具尺寸的第一参数。",
+      "visual_criteria": "以头高为单位量全身高度，得出 1:2、1:3、1:8 等。",
+      "prompt_usage": "1:2 head-to-body ratio",
+      "aliases": ["头身比例"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "chibi / super deformed",
+      "term_zh": "Q 版 / 超变形",
+      "definition": "将角色头部放大、身体压缩的夸张化处理，通常 1:2 至 1:3 头身，强调可爱与识别度。",
+      "visual_criteria": "头部高度接近或超过身体高度的一半。",
+      "prompt_usage": "chibi style, 1:2 head-to-body ratio",
+      "aliases": ["SD 比例"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "silhouette readability",
+      "term_zh": "剪影可读性",
+      "definition": "角色填成纯黑后仍可被辨认的程度，是角色设计的第一验收标准。",
+      "visual_criteria": "把画面去色并压成纯黑，仍能读出角色的独特轮廓。",
+      "prompt_usage": "strong silhouette design",
+      "aliases": ["轮廓识别度"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "color blocking",
+      "term_zh": "色彩分块",
+      "definition": "用少量高对比色块划分角色部位，形成可记忆的色彩签名，是角色复用的核心手段。",
+      "visual_criteria": "身体各部位的颜色边界清晰、色数少、位置固定。",
+      "prompt_usage": "clean color blocking, limited palette",
+      "aliases": ["色块划分"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "designer toy / art toy",
+      "term_zh": "设计师玩具 / 潮玩",
+      "definition": "以设计师个人风格为核心、小批量或限量生产的收藏型玩具，强调造型与配色而非可玩性。",
+      "visual_criteria": "造型高度风格化、尺寸小巧、常有亚克力底座与展示包装。",
+      "prompt_usage": "designer art toy, collectible figure",
+      "aliases": ["潮玩"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "blind box",
+      "term_zh": "盲盒",
+      "definition": "随机封装同一系列中某一款的销售形式，通常含常规款与低概率隐藏款（chase）。",
+      "visual_criteria": "成套同风格小比例角色、包装统一、常有隐藏款差异。",
+      "prompt_usage": "blind box collectible figure",
+      "aliases": ["抽盒"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "chase figure",
+      "term_zh": "隐藏款",
+      "definition": "盲盒系列中低概率出现的特殊版本，常见比例为 1:96 或 1:144，通常有配色或材质变化。",
+      "visual_criteria": "同系列角色的异色或异材质版本。",
+      "prompt_usage": "rare chase variant figure",
+      "aliases": ["隐藏款", "secret"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "soft vinyl / sofubi",
+      "term_zh": "软胶 / 搪胶",
+      "definition": "以软质 PVC 旋转成型制作的玩具工艺，表面呈半哑光、边缘略软、常见分模线，是日系怪兽与潮玩的主流工艺。",
+      "visual_criteria": "表面半哑光、边缘圆钝、可见轻微分模线、涂装边界略柔。",
+      "prompt_usage": "soft vinyl toy, sofubi finish",
+      "aliases": ["搪胶玩具"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "glossy resin",
+      "term_zh": "亮面树脂",
+      "definition": "以 PU 树脂灌注的收藏玩具工艺，表面可做到高光泽或半透，细节锐利。",
+      "visual_criteria": "表面高光锐利、边缘清晰、可能有半透或珠光效果。",
+      "prompt_usage": "glossy resin collectible",
+      "aliases": ["树脂手办"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "matte vinyl",
+      "term_zh": "哑光软胶",
+      "definition": "表面做哑光处理的软胶玩具，光线漫反射、无强高光，是当下潮玩主流质感。",
+      "visual_criteria": "高光面积大而弱、无镜面反射、颜色沉。",
+      "prompt_usage": "matte vinyl finish",
+      "aliases": ["哑光胶"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "Pantone matching",
+      "term_zh": "潘通色卡分色",
+      "definition": "玩具量产前按 Pantone 色卡指定每个色块的准确色值，保证批次间色彩一致。",
+      "visual_criteria": "画面中若出现色卡或分色标注，说明处于量产准备阶段。",
+      "prompt_usage": "Pantone-matched color separation",
+      "aliases": ["分色卡"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "mascot design",
+      "term_zh": "吉祥物设计",
+      "definition": "为品牌、活动或机构设计的拟人化形象，要求易识别、易复现、可做成立体周边。",
+      "visual_criteria": "造型圆润、配色简洁、比例夸张、常带品牌色与标志物。",
+      "prompt_usage": "brand mascot design, simple rounded shapes",
+      "aliases": ["品牌吉祥物"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "kaiju",
+      "term_zh": "怪兽 / 怪獣",
+      "definition": "源自日本特摄的怪兽造型传统，特征是粗糙表面、不对称结构、厚实四肢，与 sofubi 工艺高度绑定。",
+      "visual_criteria": "体表有褶皱或鳞片、四肢粗壮、造型不追求可爱。",
+      "prompt_usage": "kaiju style sofubi monster",
+      "aliases": ["怪獣"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "turnaround 8-angle",
+      "term_zh": "八角度转面",
+      "definition": "每 45° 绘制一个视角的转面规范，用于确保角色在任意角度下的体积与配色都成立。",
+      "visual_criteria": "画面中角色朝向呈等角度递增。",
+      "prompt_usage": "8-angle turnaround sheet",
+      "aliases": ["八视图"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "consistency anchor",
+      "term_zh": "一致性锚点",
+      "definition": "角色身份所依赖的不可变特征集合，通常不超过 5 项：轮廓、比例、配色分块、标志配饰、眼型。",
+      "visual_criteria": "改动其中任一项后角色不再被认出。",
+      "prompt_usage": "consistent character design, fixed silhouette and palette",
+      "aliases": ["身份特征"],
+      "confidence_grade": "B"
+    }
+  ],
+  "keywords": [
+    { "tag": "character turnaround sheet", "zh": "角色转面设定图", "ir_category": "character", "when": "画面含多视角并列", "avoid_when": "单视角单幅作品" },
+    { "tag": "expression sheet", "zh": "表情表", "ir_category": "expression", "when": "多格头部表情并列", "avoid_when": "单一表情" },
+    { "tag": "1:2 head-to-body ratio", "zh": "1:2 头身比", "ir_category": "character", "when": "头高接近全身一半", "avoid_when": "写实比例" },
+    { "tag": "chibi proportions", "zh": "Q 版比例", "ir_category": "character", "when": "大头小身、四肢短粗", "avoid_when": "修长写实比例" },
+    { "tag": "strong silhouette design", "zh": "强剪影识别", "ir_category": "character", "when": "轮廓有独特凸起或负形", "avoid_when": "轮廓平庸、贴体无特征" },
+    { "tag": "clean color blocking", "zh": "清晰色彩分块", "ir_category": "character", "when": "3-5 个高辨识色块、边界清晰", "avoid_when": "满身花纹或渐变过渡" },
+    { "tag": "limited palette, 3 colors", "zh": "三色限定配色", "ir_category": "character", "when": "角色只用 3 个主色", "avoid_when": "多色复杂配色" },
+    { "tag": "signature accessory", "zh": "标志性配饰", "ir_category": "clothing", "when": "存在可单独提取复用的识别元素", "avoid_when": "无任何固定配饰" },
+    { "tag": "matte vinyl finish", "zh": "哑光软胶质感", "ir_category": "appearance", "when": "高光弱而面积大、颜色沉", "avoid_when": "镜面高光或纸面绘制" },
+    { "tag": "glossy resin collectible", "zh": "亮面树脂手办", "ir_category": "appearance", "when": "高光锐利、细节清晰", "avoid_when": "哑光或布绒质感" },
+    { "tag": "soft vinyl toy", "zh": "软胶玩具", "ir_category": "appearance", "when": "可见分模线与柔化边缘", "avoid_when": "纯平面绘制" },
+    { "tag": "designer art toy", "zh": "设计师潮玩", "ir_category": "quality_style", "when": "造型风格化、小尺寸收藏向", "avoid_when": "真人写实或场景插画" },
+    { "tag": "blind box collectible figure", "zh": "盲盒收藏手办", "ir_category": "quality_style", "when": "成套同风格小比例角色", "avoid_when": "单一大尺寸雕塑" },
+    { "tag": "brand mascot design", "zh": "品牌吉祥物", "ir_category": "character", "when": "圆润简洁、带品牌色与标志物", "avoid_when": "复杂叙事角色" },
+    { "tag": "studio product lighting", "zh": "棚拍产品光", "ir_category": "lighting_color", "when": "干净背景、可控柔光箱光位", "avoid_when": "环境叙事光" },
+    { "tag": "neutral seamless background", "zh": "中性无缝背景", "ir_category": "background", "when": "纯色或渐变摄影棚底", "avoid_when": "场景化背景" },
+    { "tag": "consistent character design", "zh": "角色一致性", "ir_category": "quality_style", "when": "多视角或多图保持同一身份特征", "avoid_when": "单图无复用需求" }
+  ],
+  "suppression": [
+    "photorealistic human",
+    "real person",
+    "inconsistent design",
+    "changing hairstyle",
+    "changing outfit between views",
+    "asymmetrical mismatched colors",
+    "text",
+    "watermark",
+    "extra limbs",
+    "deformed hands"
+  ],
+  "compile": {
+    "slot_order_override": ["character", "clothing", "expression", "pose_action", "appearance", "lighting_color", "background"],
+    "must_keep": ["character.proportion", "character.hair_design", "character.color_blocking", "quality_style.consistency_anchor"],
+    "budget_hint": { "positive_terms": 80, "lexicon_terms": 8 },
+    "note": "IP 类的编译核心是\"锚点优先\"：一致性锚点（比例/发型轮廓/配色分块/配饰）必须写在提示词最前且不可被预算裁掉，表情与背景可以裁。抑制词必须显式挡掉 inconsistent design 与 changing outfit between views。"
+  },
+  "quality_gates": [
+    "必须给出头身比 + 3-5 个一致性锚点，缺任一项进 uncertainties。",
+    "配色必须落到具体色相与分布位置，不得只写\"配色可爱\"。",
+    "多视角图必须逐视角确认同一身份特征，不得把不同视角写成不同角色。",
+    "平面绘制图不得描述分模线、关节等实体工艺特征；实体玩具图不得描述笔触。",
+    "抑制词必须包含 inconsistent design 与 changing outfit between views。"
+  ],
+  "sources": [
+    { "title": "Art toy 设计流程术语：1:2 头身比、8 角度 turnaround、Pantone 分色、blind box 1:96 chase ratio、soft vinyl / PVC / ABS、sofubi", "url": "https://ezcharacter.com/how-to/create-character-art-for-art-toy-design", "note": "D2 / D10 / lexicon 的玩具工艺依据，confidence_grade A/B。" },
+    { "title": "内部结构定义：lib/config/categories.js", "url": "file://lib/config/categories.js", "note": "ir_category 取值来源，character 与 clothing 均为内部分类。" }
+  ]
+}

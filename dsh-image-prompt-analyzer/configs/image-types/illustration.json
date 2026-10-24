@@ -1,0 +1,610 @@
+{
+  "schema_version": "1.0",
+  "config_id": "illustration",
+  "kind": "image_type_rule",
+  "code": "T6-ILL",
+  "marker": "[T6-ILL]",
+  "display_name": "插画风格",
+  "scope": "可见笔触或描线的二维绘画作品：数字绘画、绘本、漫画与条漫、编辑插画、概念设定、国风水墨、版画与丝网印。判定核心是\"笔触与媒介痕迹\"—— 能找到笔刷边缘、颜料堆积、纸纹或网点，且光照不需要物理自洽。",
+  "exclusions": [
+    "表面绝对完美、无笔触的 CG 画面 → 走 render-3d",
+    "带光学缺陷与真实噪点的照片 → 走 photography",
+    "以文字排版为主视觉的画面 → 走 poster-typography",
+    "为复用而设计的角色设定图 → 走 ip-character"
+  ],
+  "priority": 30,
+  "min_score": 0.45,
+  "min_signals": 3,
+  "secondary_threshold": 0.6,
+  "identification": {
+    "summary": "有可见笔触或描线、光照不必物理自洽、媒介痕迹可辨 —— 判插画。",
+    "signals": [
+      {
+        "id": "T6-S1",
+        "label": "笔触痕迹",
+        "observable": "存在笔刷边缘、颜料厚度、干笔飞白或色块拼接，放大后能看到笔的运动方向。",
+        "weight": 0.24
+      },
+      {
+        "id": "T6-S2",
+        "label": "描线体系",
+        "observable": "存在轮廓线或结构线，线的粗细有变化逻辑（起笔重收笔轻、或等粗勾线）。",
+        "weight": 0.2
+      },
+      {
+        "id": "T6-S3",
+        "label": "平涂或分层上色",
+        "observable": "颜色以大块平涂 + 少量渐变构成，明暗分界清晰（赛璐璐）或柔和过渡（厚涂）。",
+        "weight": 0.18
+      },
+      {
+        "id": "T6-S4",
+        "label": "媒介纹理",
+        "observable": "存在纸纹、布纹、网点（halftone）、颗粒、版画压痕等非光学成因的纹理。",
+        "weight": 0.16
+      },
+      {
+        "id": "T6-S5",
+        "label": "光照非物理",
+        "observable": "高光与阴影位置服务于画面效果而非光源方向；可有多个矛盾光源。",
+        "weight": 0.12
+      },
+      {
+        "id": "T6-S6",
+        "label": "平面化处理",
+        "observable": "空间纵深被压缩、透视不严格、背景可被概括为色块或装饰纹样。",
+        "weight": 0.1
+      }
+    ],
+    "anti_signals": [
+      {
+        "id": "T6-X1",
+        "label": "光学缺陷",
+        "observable": "存在暗角、色差、镜头畸变、真实传感器噪点。",
+        "weight": 0.35,
+        "veto": true
+      },
+      {
+        "id": "T6-X2",
+        "label": "表面绝对完美",
+        "observable": "反射无瑕疵、材质无笔触、边缘绝对精确。",
+        "weight": 0.3
+      },
+      {
+        "id": "T6-X3",
+        "label": "文字主导",
+        "observable": "文字排版构成主视觉。",
+        "weight": 0.3,
+        "veto": true
+      }
+    ]
+  },
+  "dimensions": [
+    {
+      "id": "D1",
+      "name": "绘画流派与媒介",
+      "ir_category": "quality_style",
+      "slot": "quality_style.art_genre",
+      "required": true,
+      "question": "属于什么流派？用什么媒介画的？",
+      "observable_criteria": [
+        "流派：扁平插画（flat）/ 编辑插画（editorial）/ 概念设定（concept art）/ 绘本（storybook）/ 漫画（manga）/ 国风水墨 / 版画 / 丝网印（risograph）",
+        "媒介：数字绘画 / 水彩 / 油画 / 丙烯 / 水粉（gouache）/ 墨水 / 彩铅 / 蜡笔",
+        "媒介判断依据：透明度、颜料堆积、干湿边缘、颗粒分布"
+      ],
+      "forbidden": [
+        "不要用\"插画风\"这种同义反复代替流派名"
+      ],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D2",
+      "name": "笔触",
+      "ir_category": "quality_style",
+      "slot": "quality_style.brushwork",
+      "required": true,
+      "question": "笔触是什么样的？笔刷边缘硬还是软？有没有方向与力度？",
+      "observable_criteria": [
+        "笔触类型：厚涂堆叠（impasto）/ 薄涂罩染（glazing）/ 干笔飞白 / 湿画法晕染（wet-on-wet）/ 点彩",
+        "边缘：硬边（硬毛刷、平涂）或软边（喷枪、水彩扩散）",
+        "方向性：笔触是否沿形体结构走",
+        "力度：起笔重收笔轻、或均匀铺色"
+      ],
+      "forbidden": [
+        "不要只说\"笔触细腻\"，必须给笔触类型"
+      ],
+      "fallback_uncertainty": "insufficient_detail"
+    },
+    {
+      "id": "D3",
+      "name": "线稿与描线",
+      "ir_category": "quality_style",
+      "slot": "quality_style.linework",
+      "required": true,
+      "question": "有没有线？线是什么颜色、粗细、质感？",
+      "observable_criteria": [
+        "有无：有线稿（lineart）/ 无线稿（lineless）/ 部分描线",
+        "线宽：等粗勾线 / 起收笔变化 / 粗细对比强烈",
+        "线色：纯黑 / 深棕 / 彩色线（color hold，线与邻近色同色相）",
+        "质感：钢笔平滑线 / 毛笔书写线 / 铅笔颗粒线"
+      ],
+      "forbidden": [
+        "不要在无线稿的画面上写线宽特征"
+      ],
+      "fallback_uncertainty": "insufficient_detail"
+    },
+    {
+      "id": "D4",
+      "name": "上色技法",
+      "ir_category": "lighting_color",
+      "slot": "lighting_color.coloring_method",
+      "required": true,
+      "question": "怎么上色的？是平涂、赛璐璐还是厚涂？阴影怎么处理？",
+      "observable_criteria": [
+        "赛璐璐（cel shading）：明暗两级硬分界，阴影形状明确",
+        "柔和上色（soft painting）：多级过渡、边缘羽化",
+        "厚涂（impasto painting）：颜色互相覆盖、有颜料厚度",
+        "水彩：透明叠加、边缘有沉积线（watermark edge）",
+        "网点：用半调网点（halftone）表现明暗"
+      ],
+      "forbidden": [
+        "不要同时写 cel shading 与 soft blending 而不说明作用区域"
+      ],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D5",
+      "name": "肌理与纸张",
+      "ir_category": "appearance",
+      "slot": "appearance.texture_surface",
+      "required": true,
+      "question": "画面有什么肌理？纸是什么纸？有没有印刷痕迹？",
+      "observable_criteria": [
+        "纸纹：冷压水彩纸（粗纹）/ 热压（细纹）/ 素描纸颗粒 / 牛皮纸",
+        "颜料肌理：水彩沉淀与花边、油画的堆叠厚度、粉笔的粉末",
+        "印刷痕迹：丝网印的套色错位、网点角度、油墨不匀、孔版边缘",
+        "数字肌理：噪点叠加、扫描纹理、纸张叠加层"
+      ],
+      "forbidden": [
+        "不要在纯数字平涂图上强加纸纹"
+      ],
+      "fallback_uncertainty": "insufficient_detail"
+    },
+    {
+      "id": "D6",
+      "name": "构图与画面结构",
+      "ir_category": "composition",
+      "slot": "composition.composition_guide",
+      "required": true,
+      "question": "画面怎么组织？主体在哪？有没有装饰性元素参与构图？",
+      "observable_criteria": [
+        "构图法：三分/居中/对角/框架式/散点式/螺旋式",
+        "主体位置与占幅",
+        "装饰元素：飘带、花瓣、几何图形、纹样是否参与构图",
+        "留白方式：整片留白或填满（horror vacui）",
+        "画幅比例与出血处理"
+      ],
+      "forbidden": [
+        "不要在没有装饰元素时写\"装饰性强\""
+      ],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D7",
+      "name": "色彩体系",
+      "ir_category": "lighting_color",
+      "slot": "lighting_color.palette_relation",
+      "required": true,
+      "question": "配色怎么组织？色数多少？饱和度倾向？",
+      "observable_criteria": [
+        "色数：限定色板（2-3 色，如双色 risograph）或全彩",
+        "色相关系：单色/邻近/互补/分裂互补",
+        "饱和度：高饱和（儿童向、波普）或低饱和（文艺、复古）",
+        "特殊用色：色温对比（暖前景冷背景）、单色强调"
+      ],
+      "forbidden": [
+        "不要只写\"配色好看\"，必须给色数与色相关系"
+      ],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D8",
+      "name": "风格参考与技法溯源",
+      "ir_category": "quality_style",
+      "slot": "quality_style.style_reference",
+      "required": true,
+      "question": "这个画风的技术源头是什么？应该用什么技法词描述它？",
+      "observable_criteria": [
+        "优先用\"技法 + 媒介 + 时代流派\"描述，而不是人名",
+        "可用的溯源方向：动画赛璐璐传统、美国漫画黄金时代线稿、日本浮世绘平面构成、中国水墨写意、包豪斯几何",
+        "只有在画风属于明确的公有领域历史风格时才给风格名（如 ukiyo-e、art nouveau）",
+        "不确定时只描述可见技法，不给风格名"
+      ],
+      "forbidden": [
+        "不得指名在世艺术家，也不得用\"某艺术家风格\"作为提示词",
+        "不得凭画风猜测具体作品或工作室",
+        "不得把\"AI 感\"当风格结论"
+      ],
+      "fallback_uncertainty": "unsupported_observation"
+    }
+  ],
+  "lexicon": [
+    {
+      "term_en": "cel shading",
+      "term_zh": "赛璐璐上色",
+      "definition": "源自动画赛璐璐片的传统：明暗只有两级、分界硬朗，阴影形状明确可数。",
+      "visual_criteria": "亮部与暗部之间是硬边，没有中间过渡带。",
+      "prompt_usage": "cel shading, hard shadow edges",
+      "aliases": [
+        "卡通渲染上色",
+        "硬边阴影"
+      ],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "soft painting",
+      "term_zh": "柔和上色 / 软边涂法",
+      "definition": "明暗之间用多级过渡与羽化边缘衔接，形体圆润，常见于厚涂与概念设定。",
+      "visual_criteria": "阴影边缘模糊、过渡带宽，无硬边分界。",
+      "prompt_usage": "soft blended painting",
+      "aliases": [
+        "软边涂"
+      ],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "impasto",
+      "term_zh": "厚涂堆叠",
+      "definition": "颜料以厚层堆积，笔触有真实高度与投影，是油画最显著的媒介特征。",
+      "visual_criteria": "笔触边缘有厚度感与自身投影，颜色之间有物理堆叠。",
+      "prompt_usage": "thick impasto brushstrokes",
+      "aliases": [
+        "厚笔触"
+      ],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "glazing",
+      "term_zh": "罩染",
+      "definition": "在已干的色层上覆盖透明薄色层，通过透光叠色产生深度与光泽，是古典油画的传统技法。",
+      "visual_criteria": "颜色呈透明叠加感，暗部有内透光而非单纯压暗。",
+      "prompt_usage": "glazed translucent layers",
+      "aliases": [
+        "透明罩染"
+      ],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "wet-on-wet",
+      "term_zh": "湿画法",
+      "definition": "在未干的水彩层上继续上色，颜色自然扩散融合，边缘柔和无控制。",
+      "visual_criteria": "颜色互相渗开、边缘呈不规则扩散，无清晰边界。",
+      "prompt_usage": "wet-on-wet watercolor bleed",
+      "aliases": [
+        "湿接"
+      ],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "dry brush",
+      "term_zh": "干笔 / 飞白",
+      "definition": "笔上颜料少、在粗糙纸面上快速划过留下的断续笔痕，用于表现粗糙质感与速度。",
+      "visual_criteria": "笔触中有纸面透出的断续空隙。",
+      "prompt_usage": "dry brush texture",
+      "aliases": [
+        "飞白"
+      ],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "granulation",
+      "term_zh": "颗粒沉淀",
+      "definition": "水彩颜料中的重质色粉在纸面凹陷处沉积形成的颗粒感，是水彩的独特肌理。",
+      "visual_criteria": "色块内部有细密的斑点状沉积，集中在纸纹低处。",
+      "prompt_usage": "watercolor granulation",
+      "aliases": [
+        "水彩沉淀"
+      ],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "lineart",
+      "term_zh": "线稿 / 描线",
+      "definition": "以线条界定形体与结构的绘制层，线宽变化与线色决定画面气质。",
+      "visual_criteria": "形体边缘有连续的线条，非色块拼接。",
+      "prompt_usage": "clean lineart with varied line weight",
+      "aliases": [
+        "勾线"
+      ],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "lineless art",
+      "term_zh": "无线稿绘画",
+      "definition": "完全用色块与明暗交界界定形体、不使用轮廓线的画法。",
+      "visual_criteria": "形体边界由色差或明暗差形成，没有独立线条。",
+      "prompt_usage": "lineless painting",
+      "aliases": [
+        "无色线"
+      ],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "color hold",
+      "term_zh": "彩色线",
+      "definition": "把线稿颜色改为与邻近区域同色相的处理，用于让线条融入画面、减弱生硬感。",
+      "visual_criteria": "线条颜色不是黑色，而是接近其所在区域的颜色。",
+      "prompt_usage": "colored lineart, color holds",
+      "aliases": [
+        "线色融合"
+      ],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "halftone",
+      "term_zh": "半调网点",
+      "definition": "用固定角度的网点密度模拟连续调，是印刷与漫画的传统明暗表现方式。",
+      "visual_criteria": "放大可见规则排列的点阵，密度随明暗变化。",
+      "prompt_usage": "halftone dot shading",
+      "aliases": [
+        "网点"
+      ],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "risograph",
+      "term_zh": "丝网孔版印刷",
+      "definition": "以孔版逐色套印的印刷方式，特征是限定色数、油墨不匀、套色轻微错位、纸张有孔版质感。",
+      "visual_criteria": "颜色仅 2-3 种、色块边缘有轻微错位与油墨不均。",
+      "prompt_usage": "risograph print, misregistered layers",
+      "aliases": [
+        "孔版印刷"
+      ],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "cross-hatching",
+      "term_zh": "交叉排线",
+      "definition": "用交叉的平行线组表现明暗与体积的线描技法，源自版画与铜版画传统。",
+      "visual_criteria": "明暗由不同密度的交叉线构成，无平滑渐变。",
+      "prompt_usage": "cross-hatched shading",
+      "aliases": [
+        "排线"
+      ],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "ukiyo-e",
+      "term_zh": "浮世绘",
+      "definition": "日本江户时代的木版画传统，特征是平面化构图、粗描线、平涂色块、装饰性纹样，属于公有领域历史风格。",
+      "visual_criteria": "强烈平面构成、色块平涂、粗黑轮廓、装饰性波浪或云纹。",
+      "prompt_usage": "ukiyo-e woodblock print style",
+      "aliases": [
+        "木版画"
+      ],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "sumi-e ink wash",
+      "term_zh": "水墨写意",
+      "definition": "以墨的浓淡干湿表现形体的东亚绘画传统，强调留白与笔势，不依赖色彩。",
+      "visual_criteria": "单色墨阶、笔触有干湿变化、大面积留白。",
+      "prompt_usage": "sumi-e ink wash painting",
+      "aliases": [
+        "水墨",
+        "写意"
+      ],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "flat illustration",
+      "term_zh": "扁平插画",
+      "definition": "去除渐变、阴影与透视深度的插画风格，用纯色块与几何形构成，常见于编辑与 UI 插画。",
+      "visual_criteria": "纯色块、无渐变、无阴影、几何化造型。",
+      "prompt_usage": "flat vector illustration, solid colors",
+      "aliases": [
+        "扁平风"
+      ],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "concept art",
+      "term_zh": "概念设定",
+      "definition": "为影视、游戏前期设计服务的绘画，强调造型信息量、材质说明与氛围，常带笔触感。",
+      "visual_criteria": "画面信息密集、有设计说明性、笔触可见但结构严谨。",
+      "prompt_usage": "concept art painting",
+      "aliases": [
+        "概念设计"
+      ],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "horror vacui",
+      "term_zh": "恐空 / 填满式构图",
+      "definition": "不留空白、用纹样与元素填满整个画面的构图传统，常见于装饰艺术与民间美术。",
+      "visual_criteria": "画面几乎没有低信息空白区。",
+      "prompt_usage": "horror vacui composition, densely patterned",
+      "aliases": [
+        "满构图"
+      ],
+      "confidence_grade": "B"
+    }
+  ],
+  "keywords": [
+    {
+      "tag": "cel shading",
+      "zh": "赛璐璐上色",
+      "ir_category": "lighting_color",
+      "when": "明暗两级硬分界",
+      "avoid_when": "柔和过渡厚涂"
+    },
+    {
+      "tag": "soft blended painting",
+      "zh": "柔和涂法",
+      "ir_category": "lighting_color",
+      "when": "阴影边缘羽化、多级过渡",
+      "avoid_when": "硬边赛璐璐"
+    },
+    {
+      "tag": "thick impasto brushstrokes",
+      "zh": "厚涂笔触",
+      "ir_category": "quality_style",
+      "when": "颜料有厚度与自身投影",
+      "avoid_when": "平涂或线稿为主"
+    },
+    {
+      "tag": "wet-on-wet watercolor bleed",
+      "zh": "水彩湿画晕染",
+      "ir_category": "quality_style",
+      "when": "颜色互相渗开、边缘不规则",
+      "avoid_when": "硬边平涂"
+    },
+    {
+      "tag": "watercolor granulation",
+      "zh": "水彩颗粒沉淀",
+      "ir_category": "appearance",
+      "when": "色块内有斑点状沉积",
+      "avoid_when": "纯数字平涂"
+    },
+    {
+      "tag": "dry brush texture",
+      "zh": "干笔飞白",
+      "ir_category": "appearance",
+      "when": "笔触中有纸面透出的空隙",
+      "avoid_when": "均匀平滑铺色"
+    },
+    {
+      "tag": "clean lineart with varied line weight",
+      "zh": "粗细变化线稿",
+      "ir_category": "quality_style",
+      "when": "存在轮廓线且线宽有变化",
+      "avoid_when": "无线稿绘画"
+    },
+    {
+      "tag": "lineless painting",
+      "zh": "无线稿绘画",
+      "ir_category": "quality_style",
+      "when": "形体边界由色差界定",
+      "avoid_when": "有明显勾线"
+    },
+    {
+      "tag": "colored lineart, color holds",
+      "zh": "彩色线稿",
+      "ir_category": "quality_style",
+      "when": "线条颜色接近邻近区域",
+      "avoid_when": "纯黑勾线"
+    },
+    {
+      "tag": "halftone dot shading",
+      "zh": "半调网点明暗",
+      "ir_category": "appearance",
+      "when": "可见规则点阵表现明暗",
+      "avoid_when": "连续调渐变"
+    },
+    {
+      "tag": "risograph print, misregistered layers",
+      "zh": "孔版套色印刷",
+      "ir_category": "appearance",
+      "when": "限定 2-3 色 + 轻微套色错位",
+      "avoid_when": "全彩平滑渐变"
+    },
+    {
+      "tag": "cross-hatched shading",
+      "zh": "交叉排线明暗",
+      "ir_category": "quality_style",
+      "when": "明暗由交叉线密度构成",
+      "avoid_when": "平滑涂色"
+    },
+    {
+      "tag": "ukiyo-e woodblock print style",
+      "zh": "浮世绘木版画",
+      "ir_category": "quality_style",
+      "when": "平面化 + 粗轮廓 + 平涂色块",
+      "avoid_when": "写实三维光照"
+    },
+    {
+      "tag": "sumi-e ink wash painting",
+      "zh": "水墨写意",
+      "ir_category": "quality_style",
+      "when": "单色墨阶 + 干湿笔触 + 留白",
+      "avoid_when": "全彩厚涂"
+    },
+    {
+      "tag": "flat vector illustration, solid colors",
+      "zh": "扁平纯色插画",
+      "ir_category": "quality_style",
+      "when": "纯色块、无渐变、几何化",
+      "avoid_when": "厚涂或渐变体积"
+    },
+    {
+      "tag": "limited two-color palette",
+      "zh": "双色限定配色",
+      "ir_category": "lighting_color",
+      "when": "画面仅两种主色",
+      "avoid_when": "全彩配色"
+    },
+    {
+      "tag": "high saturation pop palette",
+      "zh": "高饱和波普配色",
+      "ir_category": "lighting_color",
+      "when": "饱和度极高、色相冲突明显",
+      "avoid_when": "低饱和文艺调"
+    },
+    {
+      "tag": "horror vacui composition",
+      "zh": "填满式构图",
+      "ir_category": "composition",
+      "when": "画面几乎无空白区",
+      "avoid_when": "大面积留白"
+    }
+  ],
+  "suppression": [
+    "photorealistic",
+    "photograph",
+    "3d render",
+    "smooth plastic shading",
+    "lens distortion",
+    "vignetting",
+    "chromatic aberration",
+    "text",
+    "watermark",
+    "artist signature"
+  ],
+  "compile": {
+    "slot_order_override": [
+      "quality_style",
+      "lighting_color",
+      "appearance",
+      "composition"
+    ],
+    "must_keep": [
+      "quality_style.art_genre",
+      "quality_style.brushwork",
+      "lighting_color.coloring_method"
+    ],
+    "budget_hint": {
+      "positive_terms": 70,
+      "lexicon_terms": 8
+    },
+    "note": "插画类把 quality_style 提到最前：流派与笔触决定画风，上色技法紧随其后。抑制词必须挡掉 photorealistic 与 3d render，否则下游容易把笔触抹平。不得使用在世艺术家名作为风格锚点，改用技法词替代。"
+  },
+  "quality_gates": [
+    "必须给出流派/媒介 + 笔触类型 + 上色技法三项，缺一项进 uncertainties。",
+    "线稿维度必须明确回答\"有线还是无线\"，不得回避。",
+    "风格溯源不得指名在世艺术家；只能用公有领域历史风格名或纯技法描述。",
+    "上色技法结论必须与笔触结论一致（赛璐璐不应同时写厚涂堆叠）。",
+    "抑制词必须包含 photorealistic 与 3d render。"
+  ],
+  "sources": [
+    {
+      "title": "内部结构定义：lib/config/categories.js",
+      "url": "file://lib/config/categories.js",
+      "note": "ir_category 取值来源。"
+    },
+    {
+      "title": "cel shading / impasto / glazing / halftone / risograph / ukiyo-e 等为美术技法通行定义（置信度 A）；lineless art / color hold / horror vacui 为行业与美术史用语（置信度 B）",
+      "url": "file://docs/rules/STANDARD_RULE_LIBRARY.md",
+      "note": "无单一权威在线来源可用时按通行定义收录并标注置信度。"
+    }
+  ]
+}

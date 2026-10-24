@@ -1,0 +1,105 @@
+{
+  "schema_version": "2.0",
+  "config_id": "illustrious",
+  "kind": "model_profile",
+  "display_name": "Illustrious XL",
+  "aliases": ["guanghui", "illustrious-xl"],
+  "variant": "base",
+  "tag_standard": {
+    "family": "illustrious",
+    "word_style": "underscored",
+    "slot_order": ["count", "character", "series", "rating", "general", "artist", "quality", "year", "meta"],
+    "slot_order_presets": [
+      {
+        "id": "count_first",
+        "applies_to": "v0.1–v1.1",
+        "order": ["count", "character", "series", "rating", "general", "artist", "quality", "year", "meta"],
+        "source": "arXiv:2409.19946v1 §3.1.2 Data Preprocessing",
+        "confidence": "A",
+        "note": "论文原文的训练期 caption 重排 schema：person count ||| character names ||| rating ||| general tags ||| artist ||| score range based rating ||| year modifier。论文未给推理期推荐顺序，且称后续 epoch 已修改排序行为；series/meta 为工程补位。confidence 只表示出处可信度，不表示这是官方推荐做法"
+      },
+      {
+        "id": "quality_first",
+        "applies_to": "v2.0",
+        "order": ["quality", "year", "rating", "artist", "count", "general", "meta"],
+        "general_order": [
+          "appearance",
+          "clothing",
+          "expression",
+          "pose_action",
+          "composition",
+          "camera",
+          "background",
+          "lighting_color"
+        ],
+        "source": "SeaArt《Illustrious XL v2.0 Update And User Guide》",
+        "confidence": "B",
+        "note": "v2.0 指南顺序：quality / newest（可选）/ rating / artist / subjects with count and details / pose / composition / additional / enhancer / absurdres"
+      }
+    ],
+    "default_slot_order_preset": "count_first",
+    "quality_block": ["masterpiece", "best quality", "very aesthetic", "absurdres"],
+    "score_block": { "mode": "none", "terms": [] },
+    "rating_vocab": { "safe": "safe", "sensitive": "sensitive", "nsfw": "nsfw", "explicit": "explicit" },
+    "rating_default": "safe",
+    "year_block": ["newest"],
+    "aesthetic_block": [],
+    "source_block": [],
+    "meta_block": [],
+    "forbidden_tags": ["score_9", "score_8_up", "score_7_up", "score_6_up", "score_5_up", "score_4_up"],
+    "negative": {
+      "required": true,
+      "terms": [
+        "lowres",
+        "bad anatomy",
+        "bad hands",
+        "text",
+        "error",
+        "worst quality",
+        "low quality",
+        "signature",
+        "watermark",
+        "username",
+        "blurry"
+      ],
+      "max_terms": 30,
+      "options": []
+    },
+    "budget": { "positive_terms": 55, "negative_terms": 30, "positive_tokens": null },
+    "trim_order": [
+      "year",
+      "aesthetic",
+      "meta",
+      "lighting_color",
+      "background",
+      "clothing",
+      "expression",
+      "pose_action",
+      "appearance",
+      "composition"
+    ],
+    "general_order": [
+      "composition",
+      "camera",
+      "subject",
+      "character",
+      "copyright",
+      "pose_action",
+      "appearance",
+      "clothing",
+      "expression",
+      "background",
+      "lighting_color"
+    ],
+    "character_format": "{name} ({series})",
+    "artist_format": "{name}",
+    "artist_prefix": "",
+    "tag_rewrites": [],
+    "never_trim_tags": ["1girl", "1boy", "solo", "sitting", "full body", "medium shot", "from above"],
+    "source_confidence": {
+      "level": "B",
+      "source": "arXiv:2409.19946v1（count_first 出处）+ SeaArt v2.0 用户指南（quality_first 出处）",
+      "note": "两张顺序表见 slot_order_presets，逐条带 source/confidence；词表来源混合，详见 spec 附录 A"
+    }
+  }
+}

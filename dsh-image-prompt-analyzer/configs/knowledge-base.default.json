@@ -1,0 +1,182 @@
+{
+  "schema_version": "2.0",
+  "config_id": "knowledge-base-default",
+  "display_name": "默认标签知识库",
+  "description": "纯本地的标签知识库：标签数据从用户提供的表格/文档导入 SQLite，查询只读本地，不联网、不上传任何图片（spec §4.5）。",
+  "enabled": true,
+  "strict_mode": false,
+
+  "storage": {
+    "backend": "sqlite",
+    "database_path": "data/knowledge.sqlite3",
+    "experience_export_path": "data/experiences/experiences.jsonl",
+    "create_if_missing": true,
+    "backup_before_migration": true
+  },
+
+  "sources": [
+    {
+      "source_id": "illustrious-tags",
+      "type": "local_file",
+      "enabled": true,
+      "display_name": "Illustrious 标签表（无画师）",
+      "format": "csv",
+      "path": "res/illustrious_tags_no_artist.csv",
+      "has_header": "auto",
+      "delimiter": ",",
+      "column_map": {
+        "tag": 0,
+        "native_category": 1,
+        "aliases": 2
+      },
+      "native_category_map": {
+        "0": "general",
+        "1": "artist",
+        "3": "copyright",
+        "4": "character",
+        "5": "meta"
+      },
+      "limit": null
+    },
+    {
+      "source_id": "animagine-tags",
+      "type": "local_file",
+      "enabled": true,
+      "display_name": "Animagine 标签表（无画师）",
+      "format": "csv",
+      "path": "res/anima_tags_no_artist.csv",
+      "has_header": "auto",
+      "delimiter": ",",
+      "column_map": {
+        "tag": 0,
+        "native_category": 1,
+        "aliases": 2
+      },
+      "native_category_map": {
+        "0": "general",
+        "1": "artist",
+        "3": "copyright",
+        "4": "character",
+        "5": "meta"
+      },
+      "limit": null
+    }
+  ],
+
+  "lookup": {
+    "mode": "local_only"
+  },
+
+  "categories": [
+    {
+      "category_id": "composition",
+      "enabled": true,
+      "display_name": "构图与画面组织",
+      "description": "景别、机位高度、人物在画面中的位置与占比、留白与对称。",
+      "native_categories": ["meta"]
+    },
+    {
+      "category_id": "camera",
+      "enabled": true,
+      "display_name": "镜头与视角",
+      "description": "视角方向、透视强度、镜头畸变倾向。不从单图硬推精确焦距。",
+      "native_categories": ["meta"]
+    },
+    {
+      "category_id": "subject",
+      "enabled": true,
+      "display_name": "主体数量与空间关系",
+      "description": "人数、性别、主体之间的前后遮挡与相对位置。",
+      "native_categories": ["general"]
+    },
+    {
+      "category_id": "character",
+      "enabled": true,
+      "display_name": "角色",
+      "description": "具体角色名。Danbooru 原生 category = character 的标签直接落在这里。",
+      "native_categories": ["character"]
+    },
+    {
+      "category_id": "copyright",
+      "enabled": true,
+      "display_name": "作品",
+      "description": "角色所属作品。Danbooru 原生 category = copyright。",
+      "native_categories": ["copyright"]
+    },
+    {
+      "category_id": "pose_action",
+      "enabled": true,
+      "display_name": "动作与姿态",
+      "description": "可观察的姿势与动作；不确定的动作必须落进 uncertainties 而不是当成事实。",
+      "native_categories": ["general"]
+    },
+    {
+      "category_id": "appearance",
+      "enabled": true,
+      "display_name": "主体外观",
+      "description": "发色发型、瞳色、体型、可见的身体特征。",
+      "native_categories": ["general"]
+    },
+    {
+      "category_id": "clothing",
+      "enabled": true,
+      "display_name": "服装与附属物",
+      "description": "穿着物、佩戴物、手持物、周围物件必须分开，不能混成一个 clothing 标签堆。",
+      "native_categories": ["general"]
+    },
+    {
+      "category_id": "background",
+      "enabled": true,
+      "display_name": "背景与场景",
+      "description": "环境类型、室内外、天气、时间、远景物件。",
+      "native_categories": ["general"]
+    },
+    {
+      "category_id": "lighting_color",
+      "enabled": true,
+      "display_name": "光影与色彩",
+      "description": "光源方向与性质、明暗对比、整体色调与配色。",
+      "native_categories": ["general"]
+    },
+    {
+      "category_id": "expression",
+      "enabled": true,
+      "display_name": "表情与细节",
+      "description": "可观察的面部表情与局部细节。推断出来的情绪必须标注为不确定。",
+      "native_categories": ["general"]
+    },
+    {
+      "category_id": "quality_style",
+      "enabled": true,
+      "display_name": "画质与风格",
+      "description": "质量词、年代词、媒介（official art / anime screenshot 等）。Danbooru 原生 category = meta。",
+      "native_categories": ["meta"]
+    },
+    {
+      "category_id": "artist",
+      "enabled": true,
+      "display_name": "画师",
+      "description": "画师标签。Danbooru 原生 category = artist。单列一类是为了让 profile 的 artist_format 能识别画师标签。",
+      "native_categories": ["artist"]
+    },
+    {
+      "category_id": "suppression",
+      "enabled": true,
+      "display_name": "抑制提示词",
+      "description": "负向提示词的来源分类。档案 2.0 的 negative 段控制这里输出什么。",
+      "native_categories": ["meta"]
+    },
+    {
+      "category_id": "unsorted",
+      "enabled": true,
+      "display_name": "未归类",
+      "description": "无法归入以上任何一类的观察。保留原文而不是丢弃，编译时排在最后。",
+      "native_categories": ["general", "artist", "copyright", "character", "meta"]
+    }
+  ],
+
+  "diagnostics": {
+    "test_database_writable": true,
+    "log_level": "info"
+  }
+}

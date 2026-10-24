@@ -1,0 +1,74 @@
+{
+  "schema_version": "2.0",
+  "config_id": "noobai-xl",
+  "kind": "model_profile",
+  "display_name": "NoobAI XL",
+  "aliases": ["noobai", "noob"],
+  "variant": "base",
+  "tag_standard": {
+    "family": "noobai",
+    "word_style": "spaced",
+    "slot_order": ["quality", "year", "meta", "rating", "count", "character", "series", "artist", "general"],
+    "slot_order_presets": [],
+    "default_slot_order_preset": null,
+    "quality_block": ["masterpiece", "best quality"],
+    "score_block": { "mode": "none", "terms": [] },
+    "rating_vocab": { "safe": "safe", "sensitive": "sensitive", "nsfw": "nsfw", "explicit": "explicit" },
+    "rating_default": "safe",
+    "year_block": ["newest"],
+    "aesthetic_block": [],
+    "source_block": [],
+    "meta_block": ["absurdres", "highres"],
+    "forbidden_tags": [
+      "score_9",
+      "score_8_up",
+      "score_7_up",
+      "score_6_up",
+      "score_5_up",
+      "score_4_up",
+      "high quality"
+    ],
+    "negative": {
+      "required": true,
+      "terms": ["mammal", "anthro", "furry", "feral", "semi-anthro"],
+      "max_terms": 30,
+      "options": []
+    },
+    "budget": { "positive_terms": 60, "negative_terms": 30, "positive_tokens": null },
+    "trim_order": [
+      "year",
+      "aesthetic",
+      "meta",
+      "lighting_color",
+      "background",
+      "clothing",
+      "expression",
+      "pose_action",
+      "appearance",
+      "composition"
+    ],
+    "general_order": [
+      "composition",
+      "camera",
+      "subject",
+      "character",
+      "copyright",
+      "pose_action",
+      "appearance",
+      "clothing",
+      "expression",
+      "background",
+      "lighting_color"
+    ],
+    "character_format": "{name} ({series})",
+    "artist_format": "artist:{name}",
+    "artist_prefix": "",
+    "tag_rewrites": [],
+    "never_trim_tags": ["1girl", "1boy", "solo", "sitting", "full body", "medium shot", "from above"],
+    "source_confidence": {
+      "level": "A",
+      "source": "NoobAI XL 官方 Model Card / HuggingFace 文档",
+      "note": "禁用下划线的词形与兽人抑制负向为官方建议；质量词表按人气百分位排序"
+    }
+  }
+}

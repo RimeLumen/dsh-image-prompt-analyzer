@@ -1,0 +1,14 @@
+{
+  "_note": "不确定性码。规则文件的 dimensions[].fallback_uncertainty 只能取 uncertainty_codes[]。此文件由宿主项目 lib/ir/schema.js 导出。",
+  "uncertainty_codes": [
+    "action_inferred",
+    "emotion_inferred",
+    "occluded_region",
+    "focal_length_unknown",
+    "lens_effect_ambiguous",
+    "entity_ambiguous",
+    "out_of_frame",
+    "insufficient_detail",
+    "unsupported_observation"
+  ]
+}

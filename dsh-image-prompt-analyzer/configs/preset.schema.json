@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://RimeLumen.dsh/dsh-image-prompt-analyzer/configs/preset.schema.json",
+  "title": "统一提示词规则 preset",
+  "description": "preset 只调整提示词编译的密度与阈值，不改变模型语法；模型语法永远由 model profile 决定。",
+  "type": "object",
+  "required": ["schema_version", "config_id", "detail_density"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "config_id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "maxLength": 64 },
+    "display_name": { "type": "string", "maxLength": 120 },
+    "description": { "type": "string", "maxLength": 2000 },
+    "enabled": { "type": "boolean", "default": true },
+    "strict_mode": { "type": "boolean", "default": false },
+
+    "detail_density": { "type": "string", "enum": ["minimal", "standard", "high"] },
+
+    "composition_min_importance": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0,
+      "description": "构图与镜头的最低保留等级。文档 §6.6 要求即使极简模式也不能删除构图、镜头与主体关系。"
+    },
+    "camera_min_importance": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 },
+    "subject_min_importance": { "type": "number", "minimum": 0, "maximum": 1, "default": 0 },
+    "other_min_importance": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0,
+      "description": "除构图/镜头/主体以外的类别的最低保留等级。"
+    },
+    "low_confidence_threshold": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0.4,
+      "description": "低于该置信度的特征不进入正向提示词，转入 uncertainties。"
+    },
+
+    "max_positive_terms": { "type": "integer", "minimum": 1, "maximum": 2000, "default": 120 },
+    "max_negative_terms": { "type": "integer", "minimum": 0, "maximum": 2000, "default": 80 },
+
+    "suppression": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "general_quality": { "type": "boolean", "default": true },
+        "structural_error": { "type": "boolean", "default": true },
+        "scene_specific": { "type": "boolean", "default": true }
+      },
+      "description": "文档 §7.2 的三类抑制开关。关闭 scene_specific 时只输出通用质量与结构解剖抑制。"
+    },
+
+    "category_priority_overrides": {
+      "type": "object",
+      "additionalProperties": { "type": "number" },
+      "description": "类别 → 排序权重覆写。数字越大越靠前，仅在同一 profile 的 positive_order 之内做局部调整。"
+    },
+
+    "analysis_weights": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "composition",
+        "camera",
+        "subject",
+        "pose_action",
+        "clothing_appearance",
+        "background",
+        "lighting_color",
+        "expression"
+      ],
+      "properties": {
+        "composition": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "camera": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "subject": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "pose_action": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "clothing_appearance": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "background": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "lighting_color": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "expression": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+      },
+      "description": "文档 §3.3 的初始优先级权重（八个分析对象，合计 1.0）。键用的是文档那张表的八行，不是 §5.2 的十三个内部分类：「服装与外观」一行同时覆盖 clothing 与 appearance。这是待验证的初始产品权重，不是已测出的最佳参数；改了它，同一张图会选出不同的特征，所以经验记录里的 config_version 会跟着变。"
+    },
+
+    "must_keep_categories": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "composition",
+          "camera",
+          "subject",
+          "character",
+          "copyright",
+          "pose_action",
+          "appearance",
+          "clothing",
+          "expression",
+          "background",
+          "lighting_color",
+          "quality_style",
+          "artist",
+          "unsorted"
+        ]
+      },
+      "description": "无论密度多低都必须保留的类别。默认 composition / camera / subject。"
+    },
+
+    "natural_language_supplement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "max_sentences": { "type": "integer", "minimum": 1, "maximum": 8, "default": 2 }
+      }
+    },
+
+    "metadata": { "type": "object" }
+  }
+}

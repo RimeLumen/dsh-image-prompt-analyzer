@@ -1,0 +1,426 @@
+{
+  "schema_version": "1.0",
+  "config_id": "photography",
+  "kind": "image_type_rule",
+  "code": "T1-PHO",
+  "marker": "[T1-PHO]",
+  "display_name": "摄影写实",
+  "scope": "光学成像的连续调照片：胶片与数码、棚拍与纪实、人像与静物。判定的核心不是\"像照片\"，而是能指出光学成因 —— 景深由光圈与距离共同决定、虚化有弥散圆形状、高光有滚降、暗部有噪点、透视有焦距压缩。",
+  "exclusions": [
+    "三维软件渲染出的\"照片级\"画面：表面过于完美、反射无瑕疵、缺少光学像差 → 走 render-3d",
+    "有明显笔触或描线的画面 → 走 illustration",
+    "以文字排版为主视觉的画面 → 走 poster-typography"
+  ],
+  "priority": 35,
+  "min_score": 0.45,
+  "min_signals": 3,
+  "secondary_threshold": 0.6,
+  "identification": {
+    "summary": "有可解释的光学缺陷与物理一致的光照，且没有可见笔触 —— 判摄影。",
+    "signals": [
+      {
+        "id": "T1-S1",
+        "label": "光学像差",
+        "observable": "画面边缘可见横向色差（紫绿边）、桶形或枕形畸变、四角失光（暗角）中的至少一项。",
+        "weight": 0.22
+      },
+      {
+        "id": "T1-S2",
+        "label": "物理一致的景深",
+        "observable": "虚化程度随距离平滑变化，焦外光斑呈圆形或多边形（由光圈叶片数决定），且虚化区域没有硬边。",
+        "weight": 0.2
+      },
+      {
+        "id": "T1-S3",
+        "label": "传感器或胶片噪点",
+        "observable": "暗部存在色度噪点（数码）或均匀银盐颗粒（胶片），颗粒大小与亮度相关。",
+        "weight": 0.16
+      },
+      {
+        "id": "T1-S4",
+        "label": "高光滚降与截断",
+        "observable": "最亮处不是纯白死区，而是有一段压缩过渡；过曝区域边缘有轻微光晕或偏色。",
+        "weight": 0.14
+      },
+      {
+        "id": "T1-S5",
+        "label": "连续调皮肤与材质",
+        "observable": "皮肤有毛孔级纹理与不均匀的次表面散射，织物有真实褶皱与磨损，没有\"塑料感\"或重复贴图。",
+        "weight": 0.14
+      },
+      {
+        "id": "T1-S6",
+        "label": "透视与焦距特征",
+        "observable": "广角近大远小夸张、长焦前后景压缩；能反推出大致焦段区间。",
+        "weight": 0.14
+      }
+    ],
+    "anti_signals": [
+      {
+        "id": "T1-X1",
+        "label": "可见笔触或描线",
+        "observable": "存在连续的手绘线条、笔刷边缘或色块拼接。",
+        "weight": 0.35,
+        "veto": true
+      },
+      {
+        "id": "T1-X2",
+        "label": "表面绝对完美",
+        "observable": "反射无任何瑕疵、材质无磨损、边缘无光学软化的\"CG 洁净感\"。",
+        "weight": 0.3
+      },
+      {
+        "id": "T1-X3",
+        "label": "光照不自洽",
+        "observable": "多个光源方向矛盾，或阴影方向与高光位置对不上。",
+        "weight": 0.25
+      },
+      {
+        "id": "T1-X4",
+        "label": "文字主导",
+        "observable": "文字构成主视觉重心。",
+        "weight": 0.3,
+        "veto": true
+      }
+    ]
+  },
+  "dimensions": [
+    {
+      "id": "D1",
+      "name": "镜头焦段与拍摄距离",
+      "ir_category": "camera",
+      "slot": "camera.focal_length",
+      "required": true,
+      "question": "这张照片大概用什么焦段、在多远拍的？判断依据是透视压缩还是空间拉伸？",
+      "observable_criteria": [
+        "广角（14-24mm）：前景夸张、边缘拉伸、垂直线明显汇聚",
+        "标准（35-50mm）：接近人眼透视，无明显拉伸或压缩",
+        "中长焦（85-135mm）：背景压缩、主体与背景贴近、面部比例平实",
+        "长焦（200mm+）：前后景几乎压成一层，背景虚化成色块",
+        "单张图无法确定精确焦距时，只给区间并记 focal_length_unknown"
+      ],
+      "forbidden": [
+        "不要给出精确到个位的焦距（除非有 EXIF）",
+        "不要把\"背景虚化\"直接等同于长焦 —— 近距离大光圈同样虚化"
+      ],
+      "fallback_uncertainty": "focal_length_unknown"
+    },
+    {
+      "id": "D2",
+      "name": "景深与对焦",
+      "ir_category": "camera",
+      "slot": "camera.depth_of_field",
+      "required": true,
+      "question": "合焦范围有多深？焦点落在哪里？焦外是什么形态？",
+      "observable_criteria": [
+        "浅景深：只有主体一层清晰，背景虚化强",
+        "深景深：前景到远景都在可接受清晰范围内",
+        "焦点位置：主体眼睛/主体正面/画面某一点，说明是否跑焦",
+        "焦外形态：圆形（全开光圈）、多边形（收缩光圈）、二线性（老镜头）"
+      ],
+      "forbidden": ["不要在没有焦外高光点的情况下断言 bokeh 形状"],
+      "fallback_uncertainty": "lens_effect_ambiguous"
+    },
+    {
+      "id": "D3",
+      "name": "光圈与曝光特征",
+      "ir_category": "camera",
+      "slot": "camera.aperture_exposure",
+      "required": true,
+      "question": "大致光圈区间是多少？曝光倾向是欠、过还是准？动态范围表现如何？",
+      "observable_criteria": [
+        "大光圈（f/1.2-f/2）：极浅景深、边缘失光、轻微球差柔化",
+        "中光圈（f/4-f/8）：景深适中、锐度最高",
+        "小光圈（f/11-f/22）：深景深、可能出现衍射导致的整体软化",
+        "曝光倾向：高光是否溢出、暗部是否堵塞、整体是低键还是高键",
+        "动态范围：单张 HDR / 包围曝光合成 / 明显截断"
+      ],
+      "forbidden": ["不要从虚化程度反推具体光圈值并当成事实"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D4",
+      "name": "主辅光源布局",
+      "ir_category": "lighting_color",
+      "slot": "lighting_color.light_layout",
+      "required": true,
+      "question": "几个光源？各自什么方向、什么软硬？有没有反光板或负补光？",
+      "observable_criteria": [
+        "主光方向：相对镜头的方位（左前 45°/右侧 90°/正逆光/顶光）",
+        "光质：硬光（阴影边缘锐利）或柔光（阴影过渡宽）",
+        "辅光：反光板补光、环境漫射、负补光（加深阴影）",
+        "轮廓光/发丝光：主体边缘是否有独立亮边",
+        "背景光：背景是否被单独照亮（渐变/光斑/纯色）"
+      ],
+      "forbidden": ["不要写\"自然光\"就结束，必须说明是窗光、阴天漫射还是直射阳光"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D5",
+      "name": "调色与胶片模拟",
+      "ir_category": "lighting_color",
+      "slot": "lighting_color.color_grade",
+      "required": true,
+      "question": "色彩被怎么处理过？是胶片特性还是数字调色？阴影与高光各偏什么色？",
+      "observable_criteria": [
+        "阴影色偏：偏青（Kodak 风格）或偏绿（Fuji 风格）或中性",
+        "高光色偏：偏暖黄（Gold）或偏粉（Portra）或偏冷白",
+        "对比曲线：S 曲线强（高对比）或提亮阴影（褪色感）",
+        "饱和度：整体低饱和 + 单色强调（分离色调）",
+        "胶片特征：颗粒、halation、暗角、色罩（color cast）"
+      ],
+      "forbidden": ["不要把\"电影感\"当结论，必须写出具体的阴影/高光色偏"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D6",
+      "name": "情绪与人物状态",
+      "ir_category": "expression",
+      "slot": "expression.mood_state",
+      "required": true,
+      "question": "画面在传达什么情绪？人物处于什么状态？这个状态是摆拍还是抓拍？",
+      "observable_criteria": [
+        "情绪只从可见线索推：眼神方向、嘴角、肩颈紧张度、手部动作",
+        "状态：放松/戒备/疲惫/专注/愉悦，需给出身体依据",
+        "摆拍 vs 抓拍：姿态是否完美对称、视线是否对准镜头、动作是否有运动模糊"
+      ],
+      "forbidden": ["不要编造人物的心理活动与背景故事"],
+      "fallback_uncertainty": "emotion_inferred"
+    },
+    {
+      "id": "D7",
+      "name": "构图与视觉引导",
+      "ir_category": "composition",
+      "slot": "composition.composition_guide",
+      "required": true,
+      "question": "画面怎么组织？主体在哪？视线怎么流动？",
+      "observable_criteria": [
+        "构图法：三分/居中/对角线/框架式/引导线/前景遮挡",
+        "主体位置与占比（按画幅百分比估算）",
+        "视线动线：从哪进入、在哪停留",
+        "负空间：留白占比与作用"
+      ],
+      "forbidden": ["不要把所有构图法都列一遍，只写实际存在的那一种"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D8",
+      "name": "后期修图特征",
+      "ir_category": "quality_style",
+      "slot": "quality_style.retouch_signature",
+      "required": true,
+      "question": "后期做了什么？修到什么程度？有没有过度处理的痕迹？",
+      "observable_criteria": [
+        "皮肤处理：保留纹理（自然）或磨皮过度（塑料感）",
+        "锐化：局部加锐、边缘光晕（halo）",
+        "局部调整：渐变滤镜、径向提亮、减淡加深（dodge & burn）",
+        "合成痕迹：边缘不自然的蒙版、光照方向不一致"
+      ],
+      "forbidden": ["不要断言使用了某个具体软件或预设"],
+      "fallback_uncertainty": "unsupported_observation"
+    }
+  ],
+  "lexicon": [
+    {
+      "term_en": "35mm documentary",
+      "term_zh": "35mm 纪实",
+      "definition": "以 35mm 焦段贴近拍摄的纪实语言：视角接近人眼、保留环境信息、不刻意虚化。",
+      "visual_criteria": "人物与所处环境同时清晰，没有强烈背景虚化，画面有\"在场感\"。",
+      "prompt_usage": "35mm documentary photography",
+      "aliases": ["35mm 街拍", "纪实视角"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "85mm cinematic portrait",
+      "term_zh": "85mm 电影感人像",
+      "definition": "85mm 是公认的人像黄金焦段：面部比例自然、背景适度压缩、浅景深易得。",
+      "visual_criteria": "头肩构图、面部无透视变形、背景柔和虚化。",
+      "prompt_usage": "85mm cinematic portrait",
+      "aliases": ["85mm 人像"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "telephoto compression",
+      "term_zh": "长焦压缩",
+      "definition": "长焦把前后景在视觉上压近，使远处物体显得更大、层次更扁平。",
+      "visual_criteria": "背景元素与主体大小比例失衡、层次感减弱、空间被\"压平\"。",
+      "prompt_usage": "telephoto compression",
+      "aliases": ["空间压缩"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "bokeh",
+      "term_zh": "焦外虚化",
+      "definition": "景深之外的失焦区域呈现的质感，由镜头光圈叶片形状与光学设计决定，是镜头个性最直接的体现。",
+      "visual_criteria": "失焦高光点呈现圆形、多边形或甜甜圈形。",
+      "prompt_usage": "creamy bokeh",
+      "aliases": ["散景"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "shallow depth of field",
+      "term_zh": "浅景深",
+      "definition": "合焦范围很窄，只有一层清晰，用于隔离主体与背景。",
+      "visual_criteria": "主体锐利、前后景迅速虚化。",
+      "prompt_usage": "shallow depth of field",
+      "aliases": ["浅景深"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "selective focus",
+      "term_zh": "选择性对焦",
+      "definition": "在多层画面中只让某一层清晰，其余层失焦，用于强制视觉引导。",
+      "visual_criteria": "画面存在清晰层与模糊层的明确分界。",
+      "prompt_usage": "selective focus",
+      "aliases": ["局部对焦"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "Kodak Portra 400",
+      "term_zh": "柯达 Portra 400",
+      "definition": "以低对比、宽容度高、肤色偏暖粉著称的彩色负片，人像领域的基准胶片。",
+      "visual_criteria": "肤色柔和偏暖、高光滚降平滑、阴影不深、整体对比偏平。",
+      "prompt_usage": "shot on Kodak Portra 400",
+      "aliases": ["Portra 400"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "Kodak Gold 200",
+      "term_zh": "柯达 Gold 200",
+      "definition": "消费级彩色负片，暖金色调、饱和度偏高，是\"日常胶片感\"的代表。",
+      "visual_criteria": "整体偏金黄、高光偏暖、蓝色略偏青。",
+      "prompt_usage": "shot on Kodak Gold 200",
+      "aliases": ["Gold 200"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "Fuji Pro 400H",
+      "term_zh": "富士 Pro 400H",
+      "definition": "以冷调、青色阴影与柔和高光著称的彩色负片，适合清新与过曝风格。",
+      "visual_criteria": "阴影偏青绿、高光偏冷白、饱和度中等偏低。",
+      "prompt_usage": "shot on Fuji Pro 400H",
+      "aliases": ["400H"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "Cinestill 800T",
+      "term_zh": "Cinestill 800T",
+      "definition": "由电影胶片改造的钨丝灯平衡负片，标志是强烈的红色 halation 光晕。",
+      "visual_criteria": "高光边缘有明显的红色扩散光晕，整体偏冷蓝，夜间人造光场景。",
+      "prompt_usage": "shot on Cinestill 800T, strong halation",
+      "aliases": ["800T"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "halation",
+      "term_zh": "卤光 / 光晕",
+      "definition": "强光穿过胶片片基后反射回乳剂层造成的红色扩散光晕，数码可用后期模拟。",
+      "visual_criteria": "亮部边缘出现柔和的红橙色外扩。",
+      "prompt_usage": "warm halation around highlights",
+      "aliases": ["光晕"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "three-point lighting",
+      "term_zh": "三点布光",
+      "definition": "主光、辅光、轮廓光构成的基础布光结构，分别负责造型、控制光比、分离主体与背景。",
+      "visual_criteria": "能看出一个明确主光方向、一个补光方向、以及主体边缘的亮边。",
+      "prompt_usage": "three-point lighting setup",
+      "aliases": ["三点光"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "rim light",
+      "term_zh": "轮廓光",
+      "definition": "从主体后方侧向打来的光，在主体边缘形成亮边，用于把主体从背景中剥离。",
+      "visual_criteria": "主体轮廓出现连续或断续的亮边，背景相对更暗。",
+      "prompt_usage": "rim light separating subject from background",
+      "aliases": ["边缘光", "发丝光"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "window light",
+      "term_zh": "窗光",
+      "definition": "以窗户为单一光源的布光，方向明确、衰减自然，是最常用的自然人像光。",
+      "visual_criteria": "光从一侧进入，近窗侧亮、远窗侧迅速变暗，阴影柔和。",
+      "prompt_usage": "soft window light from the left",
+      "aliases": ["自然窗光"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "golden hour",
+      "term_zh": "黄金时刻",
+      "definition": "太阳高度角约 -4°~6° 的时段，光线低角度、暖色、柔和，是户外人像的首选。",
+      "visual_criteria": "光色明显偏金黄、阴影长、光质柔和。",
+      "prompt_usage": "golden hour backlight",
+      "aliases": ["魔幻时刻"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "dodge and burn",
+      "term_zh": "减淡加深",
+      "definition": "局部提亮与压暗的后期手法，用于强化体积与视觉重点，源自暗房遮挡技术。",
+      "visual_criteria": "画面亮度分布有明确的人工塑形痕迹，局部过渡非常平滑。",
+      "prompt_usage": "dodge and burn retouching",
+      "aliases": ["局部提亮压暗"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "color grading",
+      "term_zh": "调色",
+      "definition": "在后期统一画面色彩关系的过程，包括白平衡校正、分离色调、曲线塑形。",
+      "visual_criteria": "阴影与高光呈现不同的色相偏移。",
+      "prompt_usage": "cinematic color grading, teal shadows",
+      "aliases": ["色彩分级"],
+      "confidence_grade": "A"
+    }
+  ],
+  "keywords": [
+    { "tag": "35mm documentary photography", "zh": "35mm 纪实摄影", "ir_category": "camera", "when": "人物与环境同时清晰、无强虚化", "avoid_when": "背景被大幅虚化" },
+    { "tag": "50mm standard lens", "zh": "50mm 标准镜头", "ir_category": "camera", "when": "透视接近人眼、无明显拉伸或压缩", "avoid_when": "明显的广角夸张或长焦压缩" },
+    { "tag": "85mm cinematic portrait", "zh": "85mm 电影感人像", "ir_category": "camera", "when": "头肩构图、面部无变形、背景柔化", "avoid_when": "全身环境肖像且背景清晰" },
+    { "tag": "wide angle 24mm", "zh": "24mm 广角", "ir_category": "camera", "when": "前景夸张、边缘拉伸、垂直线汇聚", "avoid_when": "空间被压平" },
+    { "tag": "telephoto compression", "zh": "长焦压缩", "ir_category": "camera", "when": "背景与主体在视觉上被压近", "avoid_when": "广角纵深夸张" },
+    { "tag": "shallow depth of field", "zh": "浅景深", "ir_category": "camera", "when": "只有一层清晰、背景迅速虚化", "avoid_when": "全景深清晰" },
+    { "tag": "creamy bokeh", "zh": "奶油般焦外", "ir_category": "camera", "when": "焦外过渡柔和、光斑圆润", "avoid_when": "焦外二线性明显、边缘硬" },
+    { "tag": "sharp focus on eyes", "zh": "焦点在眼睛", "ir_category": "camera", "when": "人像且瞳孔清晰锐利", "avoid_when": "人像失焦或焦点在别处" },
+    { "tag": "shot on Kodak Portra 400", "zh": "柯达 Portra 400", "ir_category": "lighting_color", "when": "低对比、肤色暖粉、高光平滑", "avoid_when": "高对比强饱和" },
+    { "tag": "shot on Kodak Gold 200", "zh": "柯达 Gold 200", "ir_category": "lighting_color", "when": "暖金色调、日常胶片感", "avoid_when": "冷调青蓝为主" },
+    { "tag": "shot on Fuji Pro 400H", "zh": "富士 Pro 400H", "ir_category": "lighting_color", "when": "阴影偏青、高光偏冷白", "avoid_when": "浓重暖调" },
+    { "tag": "shot on Cinestill 800T", "zh": "Cinestill 800T", "ir_category": "lighting_color", "when": "夜间人造光 + 红色光晕", "avoid_when": "日光场景、无光晕" },
+    { "tag": "film grain", "zh": "胶片颗粒", "ir_category": "quality_style", "when": "可见均匀银盐颗粒", "avoid_when": "数码洁净、噪点呈色斑状" },
+    { "tag": "three-point lighting", "zh": "三点布光", "ir_category": "lighting_color", "when": "能识别主光、辅光、轮廓光", "avoid_when": "单一自然光" },
+    { "tag": "rim light", "zh": "轮廓光", "ir_category": "lighting_color", "when": "主体边缘有独立亮边", "avoid_when": "主体与背景亮度接近" },
+    { "tag": "soft window light", "zh": "柔和窗光", "ir_category": "lighting_color", "when": "单侧自然光、衰减明显", "avoid_when": "多向布光" },
+    { "tag": "golden hour backlight", "zh": "黄金时刻逆光", "ir_category": "lighting_color", "when": "低角度暖光 + 逆光轮廓", "avoid_when": "正午顶光或阴天" },
+    { "tag": "natural skin texture", "zh": "自然皮肤纹理", "ir_category": "appearance", "when": "可见毛孔与肤色不均", "avoid_when": "磨皮过度、塑料感" }
+  ],
+  "suppression": [
+    "cartoon",
+    "anime",
+    "illustration",
+    "3d render",
+    "painting",
+    "smooth plastic skin",
+    "oversaturated",
+    "oversharpened halos",
+    "watermark"
+  ],
+  "compile": {
+    "slot_order_override": ["camera", "composition", "lighting_color", "expression", "appearance", "quality_style"],
+    "must_keep": ["camera.focal_length", "camera.depth_of_field", "lighting_color.light_layout", "lighting_color.color_grade"],
+    "budget_hint": { "positive_terms": 70, "lexicon_terms": 8 },
+    "note": "摄影类的编译顺序把 camera 提到最前：下游模型对焦段与景深的响应最强，这两个词写在前面效果明显好于写在末尾。"
+  },
+  "quality_gates": [
+    "焦段必须给区间而非精确值；无法判断时写入 focal_length_unknown 而不是猜一个数。",
+    "胶片型号只在色彩特征与颗粒特征同时吻合时才写，不能仅凭暖调就写 Portra。",
+    "光照结论必须给出方向 + 软硬 + 光比三项中的至少两项。",
+    "抑制词里必须包含 cartoon / illustration / 3d render 三者，防止下游模型把摄影提示词渲染成插画。",
+    "不得出现画面中不存在的器材（未拍到镜头就不要写镜头型号）。"
+  ],
+  "sources": [
+    { "title": "magic hour 定义与太阳高度角区间（Golden Hour -4°~6°，Blue Hour -6°~-4°）", "url": "https://baike.baidu.com/item/magic%20hour/18551380", "note": "D4 与 golden hour 术语的天文依据。" },
+    { "title": "内部结构定义：lib/config/categories.js", "url": "file://lib/config/categories.js", "note": "ir_category 取值来源。" }
+  ]
+}

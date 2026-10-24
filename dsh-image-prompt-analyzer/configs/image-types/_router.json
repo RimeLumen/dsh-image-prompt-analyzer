@@ -1,0 +1,162 @@
+{
+  "schema_version": "1.0",
+  "config_id": "image-type-router",
+  "kind": "image_type_router",
+  "version": "1.0.0",
+  "display_name": "图像类型路由表",
+  "description": "标准规则库的识别入口。只描述\"怎么判定类型\"，不描述\"怎么分析\"；每一类的分析规则在同目录的 <config_id>.json 里。",
+
+  "selection": {
+    "fallback_type": "general",
+    "min_score": 0.45,
+    "min_signals": 2,
+    "secondary_threshold": 0.6,
+    "max_secondary": 2,
+    "score_formula": "coverage_minus_penalty",
+    "score_formula_note": "coverage = 命中正向标识权重之和 / 本类全部正向标识权重之和；penalty = 命中反向标识权重之和；score = clamp(coverage - penalty, 0, 1)。任一 veto 标识命中 → score = 0。公式刻意不用乘法或 softmax：乘法会把\"少命中一条\"放大成\"判不出来\"，softmax 会让分数不可复现。",
+    "tie_break": ["priority_desc", "min_score_desc", "config_id_asc"],
+    "confidence_floor": 0.3,
+    "confidence_floor_note": "模型自报的 type_confidence 低于该值时，一律按 fallback_type 处理并记一条诊断，不采用模型的判定。"
+  },
+
+  "types": [
+    {
+      "config_id": "general",
+      "code": "T0-GEN",
+      "marker": "[T0-GEN]",
+      "file": "general.json",
+      "display_name": "通用全能拆解",
+      "role": "fallback",
+      "priority": 10,
+      "summary": "不属于其余六类的图，或证据不足以判定时的兜底类型。"
+    },
+    {
+      "config_id": "illustration",
+      "code": "T6-ILL",
+      "marker": "[T6-ILL]",
+      "file": "illustration.json",
+      "display_name": "插画风格",
+      "role": "primary",
+      "priority": 30,
+      "summary": "可见笔触或描线的二维绘画作品，含数字绘画、绘本、漫画、国风水墨。"
+    },
+    {
+      "config_id": "photography",
+      "code": "T1-PHO",
+      "marker": "[T1-PHO]",
+      "file": "photography.json",
+      "display_name": "摄影写实",
+      "role": "primary",
+      "priority": 35,
+      "summary": "光学成像的连续调照片，含胶片与数码、棚拍与纪实。"
+    },
+    {
+      "config_id": "landscape",
+      "code": "T2-LND",
+      "marker": "[T2-LND]",
+      "file": "landscape.json",
+      "display_name": "风景场景",
+      "role": "primary",
+      "priority": 40,
+      "summary": "环境本身是主体：自然或城市风景、天气与时间主导画面。"
+    },
+    {
+      "config_id": "render-3d",
+      "code": "T5-3D",
+      "marker": "[T5-3D]",
+      "file": "render-3d.json",
+      "display_name": "3D 渲染",
+      "role": "primary",
+      "priority": 50,
+      "summary": "三维软件或引擎渲染出的画面，含产品渲染、场景渲染、等距小景。"
+    },
+    {
+      "config_id": "ip-character",
+      "code": "T4-IP",
+      "marker": "[T4-IP]",
+      "file": "ip-character.json",
+      "display_name": "IP 角色反推",
+      "role": "primary",
+      "priority": 55,
+      "summary": "以\"可复用的角色\"为目的的图：角色设定、潮玩、盲盒、吉祥物。"
+    },
+    {
+      "config_id": "poster-typography",
+      "code": "T3-TYP",
+      "marker": "[T3-TYP]",
+      "file": "poster-typography.json",
+      "display_name": "海报与字体设计",
+      "role": "primary",
+      "priority": 60,
+      "summary": "文字或版式是主视觉：海报、字体设计、品牌视觉、封面。"
+    }
+  ],
+
+  "conflict_pairs": [
+    {
+      "a": "photography",
+      "b": "illustration",
+      "rule": "exclusive",
+      "why": "判据互斥：摄影是连续调、无描线、有光学像差；插画有可见笔触或描线、光照非物理。两者同时高分说明模型在猜，必须降级到 fallback。"
+    },
+    {
+      "a": "photography",
+      "b": "render-3d",
+      "rule": "exclusive",
+      "why": "摄影带光学缺陷（暗角、色差、镜头畸变、真实噪点），渲染带表面完美度（无瑕疵反射、程序化材质、无光学像差）。这条冲突是本规则库最常遇到的一对。"
+    },
+    {
+      "a": "illustration",
+      "b": "render-3d",
+      "rule": "exclusive",
+      "why": "渲染的\"干净\"与插画的\"笔触\"不能同时成立；3D 风格的插画应当落 illustration（有笔触）或 render-3d（无笔触），不能两者都算。"
+    },
+    {
+      "a": "poster-typography",
+      "b": "landscape",
+      "rule": "poster_wins",
+      "why": "带大字排版的风景海报，主视觉是版式不是风景：按 poster-typography 解析，landscape 作为次要类型提供背景与光照维度。"
+    },
+    {
+      "a": "ip-character",
+      "b": "illustration",
+      "rule": "coexist",
+      "why": "允许共存：插画风格的 IP 设定图，主类型取 ip-character（目的是可复用角色），illustration 作为次要类型提供笔触与上色维度。"
+    },
+    {
+      "a": "poster-typography",
+      "b": "render-3d",
+      "rule": "coexist",
+      "why": "允许共存：3D 字体海报，主类型取 poster-typography（版式主导），render-3d 提供材质与灯光维度。"
+    },
+    {
+      "a": "landscape",
+      "b": "photography",
+      "rule": "coexist",
+      "why": "允许共存：风光摄影，主类型取 landscape（环境是主体），photography 提供镜头与胶片维度。"
+    }
+  ],
+
+  "multi_type_policy": {
+    "secondary_requires": "分数 ≥ secondary_threshold，且与主类型不是 exclusive 关系",
+    "merge_order": ["primary", "secondary"],
+    "dimension_merge": "按 (ir_category, slot) 去重；主类型的维度优先，次要类型只补主类型没有的 slot。",
+    "marker_emit": "输出里同时给 primary_marker 与 secondary_markers；次要类型不改变主类型的必答项。",
+    "max_types": 3
+  },
+
+  "decision_procedure": [
+    "第 1 步：扫 veto 标识。任一类型的 veto 标识命中，直接排除该类型，不再算分。",
+    "第 2 步：逐条比对正向标识，只记录\"在像素上看得见\"的命中项，并回填标识编号。",
+    "第 3 步：按 score_formula 算分。命中数少于 min_signals 的类型直接记 0 分。",
+    "第 4 步：取最高分。低于 min_score 或与另一类型构成 exclusive 冲突 → 判 fallback_type（T0-GEN）。",
+    "第 5 步：次高分达到 secondary_threshold 且不冲突 → 记为次要类型，最多两个。",
+    "第 6 步：输出 primary / secondary / confidence / signals / reason。reason 不超过 40 字，且必须引用至少一个标识编号。"
+  ],
+
+  "prompt_policy": {
+    "router_block_max_lines": 14,
+    "detail_block_max_lines": 20,
+    "note": "识别块必须比分析块短（14 < 20）。模型在长上下文里会先看前面的内容，所以识别块放最前；识别块只列编号、名称与一句摘要，判据的完整定义留在规则文件里不塞进提示词。"
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "schema_version": "2.0",
+  "config_id": "pony-v6",
+  "kind": "model_profile",
+  "display_name": "Pony Diffusion V6 XL",
+  "aliases": ["pony", "ponyxl"],
+  "variant": "base",
+  "tag_standard": {
+    "family": "pony",
+    "word_style": "underscored",
+    "slot_order": ["score", "source", "rating", "general", "artist"],
+    "slot_order_presets": [],
+    "default_slot_order_preset": null,
+    "quality_block": [],
+    "score_block": { "mode": "chain_full", "terms": ["score_9", "score_8_up", "score_7_up"] },
+    "rating_vocab": {
+      "safe": "rating_safe",
+      "sensitive": "rating_questionable",
+      "nsfw": "rating_explicit",
+      "explicit": "rating_explicit"
+    },
+    "rating_default": "rating_safe",
+    "year_block": [],
+    "aesthetic_block": [],
+    "source_block": ["source_anime"],
+    "meta_block": [],
+    "forbidden_tags": [
+      "masterpiece",
+      "best quality",
+      "high quality",
+      "highres",
+      "hd",
+      "8k",
+      "very aesthetic",
+      "absurdres"
+    ],
+    "negative": {
+      "required": false,
+      "terms": [],
+      "max_terms": 40,
+      "options": [
+        {
+          "id": "community",
+          "label": "社区常用负向（默认不启用）",
+          "terms": ["score_6", "score_5", "score_4", "blurry", "watermark"]
+        }
+      ]
+    },
+    "budget": { "positive_terms": 60, "negative_terms": 40, "positive_tokens": null },
+    "trim_order": [
+      "year",
+      "aesthetic",
+      "meta",
+      "lighting_color",
+      "background",
+      "clothing",
+      "expression",
+      "pose_action",
+      "appearance",
+      "composition"
+    ],
+    "general_order": [
+      "composition",
+      "camera",
+      "subject",
+      "character",
+      "copyright",
+      "pose_action",
+      "appearance",
+      "clothing",
+      "expression",
+      "background",
+      "lighting_color"
+    ],
+    "character_format": "{name}_({series})",
+    "artist_format": "{name}",
+    "artist_prefix": "",
+    "tag_rewrites": [],
+    "never_trim_tags": ["1girl", "1boy", "solo", "sitting", "full body", "medium shot", "from above"],
+    "source_confidence": {
+      "level": "B",
+      "source": "Pony Diffusion V6 XL Model Card",
+      "note": "评分链全链与正/负向质量词为模型卡原文（A）；正负向词表细节为社区实践，只覆盖 V6，V7 已弱化评分词"
+    }
+  }
+}

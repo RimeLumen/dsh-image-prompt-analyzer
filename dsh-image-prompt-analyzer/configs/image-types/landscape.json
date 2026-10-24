@@ -1,0 +1,413 @@
+{
+  "schema_version": "1.0",
+  "config_id": "landscape",
+  "kind": "image_type_rule",
+  "code": "T2-LND",
+  "marker": "[T2-LND]",
+  "display_name": "风景场景",
+  "scope": "环境本身构成主体：自然风景（山川湖海、草原沙漠、森林雪原）、城市风景、天气现象主导的画面。判定核心是\"主体的可替代性\" —— 把人物换掉画面依然成立，说明主体是环境而不是人。",
+  "exclusions": [
+    "人物占画面主体且环境只是背景（人像）→ 走 photography",
+    "以文字排版为主的风景海报 → 走 poster-typography",
+    "三维场景渲染出的风景（表面过于洁净、无空气透视衰减）→ 走 render-3d"
+  ],
+  "priority": 40,
+  "min_score": 0.45,
+  "min_signals": 3,
+  "secondary_threshold": 0.6,
+  "identification": {
+    "summary": "环境是主体、天气与时间主导画面、纵深靠空气透视建立 —— 判风景。",
+    "signals": [
+      {
+        "id": "T2-S1",
+        "label": "环境占主体",
+        "observable": "画面 60% 以上面积由地形、水体、植被、天空或城市结构构成；人物若存在则占幅小于 1/10。",
+        "weight": 0.24
+      },
+      {
+        "id": "T2-S2",
+        "label": "纵深层次",
+        "observable": "存在前景-中景-远景至少三层，且远景对比度与饱和度低于近景（空气透视）。",
+        "weight": 0.2
+      },
+      {
+        "id": "T2-S3",
+        "label": "时间与天气线索",
+        "observable": "能由光色、太阳高度、云型、雾/雨/雪状态推断出具体时段或天气。",
+        "weight": 0.18
+      },
+      {
+        "id": "T2-S4",
+        "label": "广角或超广角透视",
+        "observable": "视野开阔、地平线接近水平、垂直线有汇聚或完全矫正。",
+        "weight": 0.14
+      },
+      {
+        "id": "T2-S5",
+        "label": "自然材质与不规则形态",
+        "observable": "岩石、植被、水体呈现无重复的有机形态，没有人工重复图案。",
+        "weight": 0.14
+      },
+      {
+        "id": "T2-S6",
+        "label": "深景深",
+        "observable": "前景到远景基本都在清晰范围内（风光摄影常收缩光圈或做景深合成）。",
+        "weight": 0.1
+      }
+    ],
+    "anti_signals": [
+      {
+        "id": "T2-X1",
+        "label": "人物主导",
+        "observable": "人物占幅大于 1/4 或成为第一视觉重点。",
+        "weight": 0.3,
+        "veto": true
+      },
+      {
+        "id": "T2-X2",
+        "label": "文字主导",
+        "observable": "文字排版构成主视觉。",
+        "weight": 0.3,
+        "veto": true
+      },
+      {
+        "id": "T2-X3",
+        "label": "人工布光",
+        "observable": "存在闪光灯或影棚灯造成的硬阴影、明显光斑墙。",
+        "weight": 0.25
+      }
+    ]
+  },
+  "dimensions": [
+    {
+      "id": "D1",
+      "name": "地理环境与场景类型",
+      "ir_category": "background",
+      "slot": "background.landform",
+      "required": true,
+      "question": "这是哪一类地貌或城市场景？有没有可辨识的地质或城市结构特征？",
+      "observable_criteria": [
+        "自然类：山地/丘陵/峡谷/喀斯特/海岸/峡湾/沙丘/草原/苔原/冰川/雨林/湖泊",
+        "城市类：天际线/街谷/桥梁/港口/工业区/古建群",
+        "给出形态证据：岩层走向、雪线、植被带、建筑密度与高度",
+        "能辨识具体地点时给出地点名，不能辨识时只给地貌类型"
+      ],
+      "forbidden": ["不要凭一张无地标的图断言具体国家或景区"],
+      "fallback_uncertainty": "entity_ambiguous"
+    },
+    {
+      "id": "D2",
+      "name": "季节与时间",
+      "ir_category": "background",
+      "slot": "background.season_time",
+      "required": true,
+      "question": "什么季节？一天中的什么时段？判断依据是什么？",
+      "observable_criteria": [
+        "季节证据：植被色相与密度、积雪线、水面状态、光照角度",
+        "时段证据：太阳高度角、光色温、阴影长度与方向",
+        "明确区分 golden hour（暖橙低角度）、blue hour（冷蓝、天光均匀）、正午（顶光硬阴影）、夜间（星空/人造光）"
+      ],
+      "forbidden": ["不要用\"傍晚\"这种模糊词代替具体光位"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D3",
+      "name": "天气与大气状态",
+      "ir_category": "background",
+      "slot": "background.weather",
+      "required": true,
+      "question": "什么天气？空气里有什么？能见度如何？",
+      "observable_criteria": [
+        "天气类型：晴/多云/阴/雾/霾/雨/雪/雷暴/沙尘",
+        "云型：积云/层云/卷云/雨云/荚状云/砧状云",
+        "大气现象：丁达尔光（云隙光）、彩虹、雾凇、逆温层平流雾、海雾",
+        "能见度：通透 / 轻微雾霭 / 浓雾遮蔽远景"
+      ],
+      "forbidden": ["不要在没有降水证据时写\"雨\"，湿地反光不等于正在下雨"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D4",
+      "name": "光照方向与强度",
+      "ir_category": "lighting_color",
+      "slot": "lighting_color.sun_light",
+      "required": true,
+      "question": "光从哪个方向来？多高？硬还是软？有没有被地形遮挡？",
+      "observable_criteria": [
+        "方向：顺光（正面受光）/侧光（塑形强）/逆光（轮廓+剪影）/顶光",
+        "高度：低角度（<15°）长阴影 / 中角度 / 高角度短阴影",
+        "光质：直射硬光 / 云层漫射软光",
+        "地形遮挡：山体投影（阴影边界沿山脊）、谷底阴影",
+        "特殊光效：耶稣光（云隙光）、反云隙光、日月同辉"
+      ],
+      "forbidden": ["不要只写\"光线很好\"，必须落到方向与高度"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D5",
+      "name": "景深与空间层次",
+      "ir_category": "composition",
+      "slot": "composition.spatial_layers",
+      "required": true,
+      "question": "画面分几层？纵深怎么建立的？",
+      "observable_criteria": [
+        "分层：前景锚点 / 中景主体地形 / 远景天际线或山脊",
+        "纵深手段：空气透视、大小对比、引导线（河流/道路/山脊）、遮挡关系",
+        "景深：全清晰（景深合成/小光圈）或前景单独虚化",
+        "地平线位置：上 1/3、中、下 1/3"
+      ],
+      "forbidden": ["不要在没有前景锚点时说\"层次丰富\""],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D6",
+      "name": "色彩关系",
+      "ir_category": "lighting_color",
+      "slot": "lighting_color.palette_relation",
+      "required": true,
+      "question": "主色是什么？冷暖关系如何？有没有对比色？",
+      "observable_criteria": [
+        "主色相：土黄/赭石/青绿/湖蓝/雪白/岩石灰",
+        "冷暖关系：整体暖调 / 冷调 / 冷暖分区（暖前景冷远景 或 反之）",
+        "对比色：互补关系（橙蓝、黄紫）是否成立",
+        "饱和度分布：远景低饱和、近景高饱和是空气透视的自然结果"
+      ],
+      "forbidden": ["不要把\"色彩丰富\"当结论"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D7",
+      "name": "镜头语言",
+      "ir_category": "camera",
+      "slot": "camera.lens_language",
+      "required": true,
+      "question": "用什么镜头视角拍的？广角还是长焦？有没有接片或航拍？",
+      "observable_criteria": [
+        "广角/超广角（14-24mm）：夸张前景、开阔视野",
+        "标准（35-50mm）：自然透视",
+        "长焦（100-400mm）：压缩山脊层次、孤立局部",
+        "特殊手法：全景接片（宽幅比例）、航拍（俯视/顶视）、移轴（垂直线绝对平行）",
+        "画幅比例：3:2 / 4:3 / 16:9 / 2.39:1 / 1:1"
+      ],
+      "forbidden": ["不要把\"宽幅\"直接当成全景接片，单张裁切也能宽幅"],
+      "fallback_uncertainty": "lens_effect_ambiguous"
+    },
+    {
+      "id": "D8",
+      "name": "情绪氛围",
+      "ir_category": "quality_style",
+      "slot": "quality_style.mood_atmosphere",
+      "required": true,
+      "question": "画面给人什么感受？这个感受由什么视觉要素支撑？",
+      "observable_criteria": [
+        "氛围词必须绑定成因：壮阔（超广角+远景层次）、宁静（低对比+对称）、神秘（浓雾+低能见度）、肃杀（冷调+荒芜）",
+        "给出至少两个支撑要素",
+        "区分\"画面本身的氛围\"与\"摄影师后期强化的氛围\""
+      ],
+      "forbidden": ["不要只给一个形容词而不给成因"],
+      "fallback_uncertainty": "unsupported_observation"
+    }
+  ],
+  "lexicon": [
+    {
+      "term_en": "golden hour",
+      "term_zh": "黄金时刻",
+      "definition": "太阳高度角约 -4°~6° 的时段，光线低角度、暖橙、柔和，阴影长，是风光摄影最重要的光位。",
+      "visual_criteria": "地面与云被染成橙金色，阴影拉长且方向一致。",
+      "prompt_usage": "golden hour landscape",
+      "aliases": ["魔幻时刻", "低角度暖光"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "blue hour",
+      "term_zh": "蓝调时刻",
+      "definition": "太阳高度角约 -6°~-4° 的时段，天光呈均匀冷蓝，无直射光，适合城市与静谧风景。",
+      "visual_criteria": "天空深蓝、地面偏冷、无长阴影、人造光开始显现。",
+      "prompt_usage": "blue hour, cool ambient light",
+      "aliases": ["蓝调时间"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "atmospheric perspective",
+      "term_zh": "空气透视",
+      "definition": "距离越远，景物对比度与饱和度越低、色相越偏冷，是人眼判断纵深的第一线索。",
+      "visual_criteria": "远山明显比近山更淡、更蓝灰。",
+      "prompt_usage": "strong atmospheric perspective",
+      "aliases": ["大气透视"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "crepuscular rays",
+      "term_zh": "云隙光 / 耶稣光",
+      "definition": "阳光穿过云层缝隙形成的可见光束，在空气中有雾、尘或水汽时最明显。",
+      "visual_criteria": "从云隙向地面放射的明亮光柱。",
+      "prompt_usage": "crepuscular rays through clouds",
+      "aliases": ["丁达尔效应", "光束"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "temperature inversion",
+      "term_zh": "逆温层",
+      "definition": "冷空气被压在暖空气下方，形成贴地的雾层，山峦从雾海中露出，是山景的经典形态。",
+      "visual_criteria": "云雾填满谷底、山顶露出、雾面平整如海。",
+      "prompt_usage": "sea of clouds, temperature inversion",
+      "aliases": ["云海", "雾海"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "alpenglow",
+      "term_zh": "高山辉",
+      "definition": "日出前或日落后，雪峰顶部被染成粉红色的现象，光源已在地平线下但高层仍受光。",
+      "visual_criteria": "只有山顶被染成粉红或橙红，下部已进入阴影。",
+      "prompt_usage": "alpenglow on the summit",
+      "aliases": ["雪峰辉"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "lenticular cloud",
+      "term_zh": "荚状云",
+      "definition": "强风越过山脊形成的透镜状层云，常被误认为 UFO，是高山与强风的地貌标志。",
+      "visual_criteria": "云体呈光滑的透镜形或多层堆叠的碟状。",
+      "prompt_usage": "lenticular clouds over the ridge",
+      "aliases": ["飞碟云"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "anvil cloud",
+      "term_zh": "砧状云",
+      "definition": "积雨云顶部到达对流层顶后向水平展开形成的砧形云，预示雷暴。",
+      "visual_criteria": "高耸云体顶部向一侧或四周摊平。",
+      "prompt_usage": "cumulonimbus with anvil cloud",
+      "aliases": ["积雨云砧"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "karst",
+      "term_zh": "喀斯特地貌",
+      "definition": "可溶性岩石（石灰岩）被水溶蚀形成的峰林、溶洞、天坑等形态。",
+      "visual_criteria": "密集的锥形孤峰、陡峭崖壁、常有溶洞与地下河。",
+      "prompt_usage": "karst landscape",
+      "aliases": ["岩溶地貌"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "fjord",
+      "term_zh": "峡湾",
+      "definition": "冰川侵蚀形成的 U 形谷被海水淹没后的狭长深水湾，两侧崖壁陡直。",
+      "visual_criteria": "两侧近乎垂直的岩壁夹一条深色水面，水面平静。",
+      "prompt_usage": "fjord with steep cliffs",
+      "aliases": ["峡江"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "hyperfocal distance",
+      "term_zh": "超焦距",
+      "definition": "对焦在该距离上时，从该距离一半到无穷远都在可接受清晰范围内，是风光全清晰的基础方法。",
+      "visual_criteria": "前景极近处到远景全部清晰。",
+      "prompt_usage": "everything in sharp focus",
+      "aliases": ["全景深"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "focus stacking",
+      "term_zh": "景深合成",
+      "definition": "拍摄多张不同焦点的照片后合成，突破单张景深极限，风光微距常用。",
+      "visual_criteria": "近前景与远景同时锐利，且没有单张浅景深造成的过渡带。",
+      "prompt_usage": "focus stacked landscape",
+      "aliases": ["景深包围"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "panorama stitch",
+      "term_zh": "全景接片",
+      "definition": "多张横向拍摄后拼接的超宽画幅，常用于山脊与城市天际线。",
+      "visual_criteria": "画幅比超过 2:1 且边缘无畸变断点。",
+      "prompt_usage": "panoramic stitched landscape",
+      "aliases": ["接片"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "tilt-shift",
+      "term_zh": "移轴",
+      "definition": "通过镜头平移或倾斜校正透视、控制焦平面，风光中用于消除建筑与树木的汇聚。",
+      "visual_criteria": "垂直线绝对平行，或焦平面呈倾斜的清晰带。",
+      "prompt_usage": "tilt-shift, corrected verticals",
+      "aliases": ["移轴镜头"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "milky way astro landscape",
+      "term_zh": "银河星野",
+      "definition": "以银河为背景的风光，需要极暗环境、大光圈广角、长曝光与高感控噪。",
+      "visual_criteria": "银河带清晰、前景地形可辨、无城市光污染。",
+      "prompt_usage": "milky way over the landscape, long exposure",
+      "aliases": ["星空风光"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "sea stack",
+      "term_zh": "海蚀柱",
+      "definition": "海蚀作用孤立出的柱状岩体，是海岸风光的典型主体。",
+      "visual_criteria": "水中独立耸立的岩柱，周围有浪蚀痕迹。",
+      "prompt_usage": "sea stacks at the coast",
+      "aliases": ["海蚀崖柱"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "dune field",
+      "term_zh": "沙丘群",
+      "definition": "风积作用形成的沙丘地貌，脊线锐利、背风面为滑落面，光影反差极强。",
+      "visual_criteria": "连续的弧形沙脊，一侧亮一侧暗，表面有风纹。",
+      "prompt_usage": "sand dune field with sharp ridges",
+      "aliases": ["沙漠沙丘"],
+      "confidence_grade": "B"
+    }
+  ],
+  "keywords": [
+    { "tag": "golden hour landscape", "zh": "黄金时刻风景", "ir_category": "lighting_color", "when": "低角度暖光、长阴影", "avoid_when": "正午顶光或蓝调冷光" },
+    { "tag": "blue hour", "zh": "蓝调时刻", "ir_category": "lighting_color", "when": "天空深蓝、无直射光", "avoid_when": "暖色低角度光" },
+    { "tag": "crepuscular rays", "zh": "云隙光", "ir_category": "lighting_color", "when": "可见从云隙射出的光柱", "avoid_when": "均匀漫射光、无云" },
+    { "tag": "strong atmospheric perspective", "zh": "强空气透视", "ir_category": "background", "when": "远景明显偏淡偏蓝", "avoid_when": "远景与近景反差一致" },
+    { "tag": "sea of clouds", "zh": "云海", "ir_category": "background", "when": "谷底被雾填满、山顶露出", "avoid_when": "晴朗通透无雾" },
+    { "tag": "dramatic cumulus sky", "zh": "戏剧性积云天空", "ir_category": "background", "when": "天空占比大且有立体云体", "avoid_when": "无云或纯阴天" },
+    { "tag": "misty forest", "zh": "雾气森林", "ir_category": "background", "when": "林木间有可见雾气层", "avoid_when": "通透干燥空气" },
+    { "tag": "snow covered peaks", "zh": "雪覆盖山峰", "ir_category": "background", "when": "山体上部积雪、雪线清晰", "avoid_when": "无雪或无山" },
+    { "tag": "ultra wide angle 16mm", "zh": "16mm 超广角", "ir_category": "camera", "when": "视野极开阔、前景夸张", "avoid_when": "长焦压缩画面" },
+    { "tag": "telephoto ridge compression", "zh": "长焦山脊压缩", "ir_category": "camera", "when": "多层山脊被压近、层间距离缩短", "avoid_when": "广角纵深" },
+    { "tag": "aerial view", "zh": "航拍视角", "ir_category": "camera", "when": "俯视或顶视、无地面视点", "avoid_when": "地面平视" },
+    { "tag": "panoramic wide format", "zh": "全景宽幅", "ir_category": "camera", "when": "画幅比超过 2:1", "avoid_when": "竖幅或方幅" },
+    { "tag": "deep depth of field", "zh": "深景深", "ir_category": "camera", "when": "前景到远景均清晰", "avoid_when": "浅景深虚化" },
+    { "tag": "teal and orange color contrast", "zh": "青橙对比", "ir_category": "lighting_color", "when": "暖色前景 + 冷色远景", "avoid_when": "整体单一色温" },
+    { "tag": "muted earthy palette", "zh": "低饱和土色调", "ir_category": "lighting_color", "when": "赭石、灰绿、岩灰为主", "avoid_when": "高饱和鲜艳" },
+    { "tag": "epic wide vista", "zh": "壮阔全景", "ir_category": "quality_style", "when": "超广角 + 多层纵深 + 大天空", "avoid_when": "局部特写构图" },
+    { "tag": "serene tranquil mood", "zh": "宁静氛围", "ir_category": "quality_style", "when": "低对比、平静水面、对称构图", "avoid_when": "强反差动感画面" }
+  ],
+  "suppression": [
+    "people in foreground",
+    "portrait",
+    "text",
+    "logo",
+    "indoor",
+    "studio lighting",
+    "shallow depth of field",
+    "overprocessed HDR halos",
+    "watermark"
+  ],
+  "compile": {
+    "slot_order_override": ["background", "lighting_color", "camera", "composition", "quality_style"],
+    "must_keep": ["background.landform", "background.season_time", "background.weather", "lighting_color.sun_light"],
+    "budget_hint": { "positive_terms": 70, "lexicon_terms": 8 },
+    "note": "风景类把 background 提到最前：地貌与天气是这类图的可复现核心，光影与镜头次之。抑制词里必须挡掉 portrait 与 people，否则下游很容易往画面里塞人。"
+  },
+  "quality_gates": [
+    "必须给出地貌类型 + 时段 + 天气三项，缺一项就写入 uncertainties。",
+    "时间判断必须落到光位（太阳高度角或光色），不得只写\"傍晚\"\"清晨\"。",
+    "空气透视与纵深必须至少给出一条具体证据（远景对比度下降 / 大小对比 / 引导线）。",
+    "不得断言具体地名，除非画面中有可辨识地标。",
+    "抑制词必须包含 people in foreground 与 text，防止下游往风景里加人与字。"
+  ],
+  "sources": [
+    { "title": "magic hour 定义与太阳高度角区间", "url": "https://baike.baidu.com/item/magic%20hour/18551380", "note": "golden hour / blue hour 的时段判据。" },
+    { "title": "内部结构定义：lib/config/categories.js", "url": "file://lib/config/categories.js", "note": "ir_category 取值来源。" }
+  ]
+}

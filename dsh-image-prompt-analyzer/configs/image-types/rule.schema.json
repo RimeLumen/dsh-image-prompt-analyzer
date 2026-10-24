@@ -1,0 +1,272 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://RimeLumen.dsh/dsh-image-prompt-analyzer/configs/image-types/rule.schema.json",
+  "title": "图像类型规则库（标准规则库的单条规则）",
+  "description": "一个文件描述一类图片：识别标识（signals）、分析维度（dimensions）、术语表（lexicon）、关键词库（keywords）、编译提示（compile）与验收门（quality_gates）。七个文件 + _router.json 构成标准规则库。字段语义见 docs/rules/STANDARD_RULE_LIBRARY.md。",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "config_id",
+    "kind",
+    "code",
+    "marker",
+    "display_name",
+    "scope",
+    "priority",
+    "min_score",
+    "min_signals",
+    "identification",
+    "dimensions",
+    "lexicon",
+    "keywords",
+    "quality_gates"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "config_id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "maxLength": 64 },
+    "kind": { "const": "image_type_rule" },
+    "code": {
+      "type": "string",
+      "pattern": "^T[0-6]-[A-Z0-9]{2,3}$",
+      "description": "类型标识码。T0 为兜底，T1..T6 为六个专类。这个码是规则库对外唯一的类型主键。"
+    },
+    "marker": {
+      "type": "string",
+      "pattern": "^\\[T[0-6]-[A-Z0-9]{2,3}\\]$",
+      "description": "提示词里使用的方括号标识，与 code 一一对应。视觉模型在输出里回填它，程序据此确认模型读到了同一套规则。"
+    },
+    "display_name": { "type": "string", "maxLength": 60 },
+    "scope": { "type": "string", "maxLength": 600, "description": "适用范围：什么样的图归这一类。" },
+    "exclusions": {
+      "type": "array",
+      "maxItems": 12,
+      "items": { "type": "string", "maxLength": 200 },
+      "description": "明确不属于本类的图，用于把边界写死。"
+    },
+    "priority": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "同分裁决优先级。越具体、越排他的类型给越高分。"
+    },
+    "min_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "加权覆盖率低于该值就不判为本类。T0 兜底类型固定为 0。"
+    },
+    "min_signals": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 12,
+      "description": "至少命中多少条正向标识才允许判为本类。防止单条弱信号直接定类型。"
+    },
+    "secondary_threshold": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "允许作为次要类型的分数门槛；缺省取 _router.json 的全局值。"
+    },
+    "identification": {
+      "type": "object",
+      "required": ["summary", "signals", "anti_signals"],
+      "additionalProperties": false,
+      "properties": {
+        "summary": { "type": "string", "maxLength": 300, "description": "一句话判据，写进提示词的紧凑版。" },
+        "signals": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "required": ["id", "label", "observable", "weight"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "pattern": "^T[0-6]-S[0-9]{1,2}$" },
+              "label": { "type": "string", "maxLength": 40 },
+              "observable": {
+                "type": "string",
+                "maxLength": 240,
+                "description": "可观察判据。必须是能在像素上看出来的东西，不能是\"感觉像摄影\"。"
+              },
+              "weight": { "type": "number", "minimum": 0.01, "maximum": 1 },
+              "veto": {
+                "type": "boolean",
+                "description": "命中即否决本类（例如\"明确存在文字排版主导\"可以否决风景类）。"
+              }
+            }
+          }
+        },
+        "anti_signals": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "required": ["id", "label", "observable", "weight"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "pattern": "^T[0-6]-X[0-9]{1,2}$" },
+              "label": { "type": "string", "maxLength": 40 },
+              "observable": { "type": "string", "maxLength": 240 },
+              "weight": { "type": "number", "minimum": 0.01, "maximum": 1 },
+              "veto": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "dimensions": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 14,
+      "description": "本类的分析维度。顺序即提问顺序，也是提示词里的清单顺序。",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "ir_category", "slot", "required", "question", "observable_criteria"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^D[0-9]{1,2}$" },
+          "name": { "type": "string", "maxLength": 60 },
+          "ir_category": {
+            "type": "string",
+            "enum": [
+              "composition",
+              "camera",
+              "subject",
+              "pose_action",
+              "appearance",
+              "clothing",
+              "expression",
+              "background",
+              "lighting_color",
+              "quality_style",
+              "character",
+              "copyright",
+              "artist"
+            ],
+            "description": "落到哪个内部分类（lib/config/categories.js）。不允许新造分类。"
+          },
+          "slot": {
+            "type": "string",
+            "pattern": "^[a-z_]+\\.[a-z0-9_]+$",
+            "description": "IR 特征键，形如 category.key。编译器按它排序与去重。"
+          },
+          "required": { "type": "boolean", "description": "必答项。必答项缺失会进 uncertainties 而不是被静默丢掉。" },
+          "question": { "type": "string", "maxLength": 240, "description": "给视觉模型的原话提问。" },
+          "observable_criteria": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": { "type": "string", "maxLength": 200 }
+          },
+          "forbidden": {
+            "type": "array",
+            "maxItems": 8,
+            "items": { "type": "string", "maxLength": 200 },
+            "description": "本维度禁止的写法（例如单图不得给精确焦距）。"
+          },
+          "fallback_uncertainty": {
+            "type": "string",
+            "enum": [
+              "action_inferred",
+              "emotion_inferred",
+              "occluded_region",
+              "focal_length_unknown",
+              "lens_effect_ambiguous",
+              "entity_ambiguous",
+              "out_of_frame",
+              "insufficient_detail",
+              "unsupported_observation"
+            ],
+            "description": "看不清时落到哪个不确定项代码，而不是硬编一个值。"
+          }
+        }
+      }
+    },
+    "lexicon": {
+      "type": "array",
+      "minItems": 6,
+      "description": "本类的专业术语表：术语 + 定义 + 视觉判据 + 提示词写法。",
+      "items": {
+        "type": "object",
+        "required": ["term_en", "term_zh", "definition", "visual_criteria", "prompt_usage", "confidence_grade"],
+        "additionalProperties": false,
+        "properties": {
+          "term_en": { "type": "string", "maxLength": 80 },
+          "term_zh": { "type": "string", "maxLength": 40 },
+          "definition": { "type": "string", "maxLength": 400 },
+          "visual_criteria": { "type": "string", "maxLength": 400, "description": "在图里怎么认出来。" },
+          "prompt_usage": { "type": "string", "maxLength": 160, "description": "写进提示词时用的英文短语；不确定就不写。" },
+          "aliases": { "type": "array", "maxItems": 8, "items": { "type": "string", "maxLength": 60 } },
+          "confidence_grade": {
+            "type": "string",
+            "enum": ["A", "B", "C"],
+            "description": "A = 有权威定义/官方文档；B = 行业通行但无单一权威；C = 社区用法，仅作备选。"
+          }
+        }
+      }
+    },
+    "keywords": {
+      "type": "array",
+      "minItems": 6,
+      "description": "可直接进提示词的关键词库，带适用条件。",
+      "items": {
+        "type": "object",
+        "required": ["tag", "zh", "ir_category", "when"],
+        "additionalProperties": false,
+        "properties": {
+          "tag": { "type": "string", "maxLength": 100 },
+          "zh": { "type": "string", "maxLength": 40 },
+          "ir_category": { "type": "string", "maxLength": 40 },
+          "when": { "type": "string", "maxLength": 240, "description": "什么条件下才写；不满足就不写。这是关键词库与\"贴标签\"的分界线。" },
+          "avoid_when": { "type": "string", "maxLength": 240 }
+        }
+      }
+    },
+    "suppression": {
+      "type": "array",
+      "maxItems": 30,
+      "items": { "type": "string", "maxLength": 80 },
+      "description": "本类常见的抑制词（负向）。只放结构性错误，不放主观审美判断。"
+    },
+    "compile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "slot_order_override": { "type": "array", "maxItems": 14, "items": { "type": "string" } },
+        "must_keep": { "type": "array", "maxItems": 10, "items": { "type": "string" } },
+        "budget_hint": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "positive_terms": { "type": "integer", "minimum": 10, "maximum": 200 },
+            "lexicon_terms": { "type": "integer", "minimum": 0, "maximum": 40 }
+          }
+        },
+        "note": { "type": "string", "maxLength": 600 }
+      }
+    },
+    "quality_gates": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 10,
+      "items": { "type": "string", "maxLength": 240 },
+      "description": "本类输出必须通过的自检门。任一条不通过，本次结果要标为不可直接使用。"
+    },
+    "sources": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "required": ["title", "url"],
+        "additionalProperties": false,
+        "properties": {
+          "title": { "type": "string", "maxLength": 160 },
+          "url": { "type": "string", "maxLength": 400 },
+          "note": { "type": "string", "maxLength": 300 }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,427 @@
+{
+  "schema_version": "1.0",
+  "config_id": "render-3d",
+  "kind": "image_type_rule",
+  "code": "T5-3D",
+  "marker": "[T5-3D]",
+  "display_name": "3D 渲染",
+  "scope": "三维软件或引擎渲染出的画面：产品渲染、场景渲染、等距小景（isometric）、建筑可视化、材质球、Clay 与线框预览。判定核心是\"物理上过于完美的表面\"—— 没有光学像差、没有磨损、反射完全干净、几何边缘绝对精确。",
+  "exclusions": [
+    "带光学缺陷与真实噪点的照片（暗角、色差、传感器噪点）→ 走 photography",
+    "有可见笔触或描线的二维画面 → 走 illustration",
+    "以文字排版为主视觉的 3D 字体海报 → 走 poster-typography（3D 作为次要类型）"
+  ],
+  "priority": 50,
+  "min_score": 0.45,
+  "min_signals": 3,
+  "secondary_threshold": 0.6,
+  "identification": {
+    "summary": "表面无瑕疵、反射干净、几何绝对精确、光照可用渲染模型解释 —— 判 3D 渲染。",
+    "signals": [
+      {
+        "id": "T5-S1",
+        "label": "表面完美度",
+        "observable": "材质无磨损、无指纹、无划痕、无灰尘；同一材质在所有物体上表现完全一致（贴图复用）。",
+        "weight": 0.22
+      },
+      {
+        "id": "T5-S2",
+        "label": "干净反射与环境映射",
+        "observable": "金属与玻璃上的反射是清晰的 HDRI 环境图，反射内容与画面中的实际环境不完全对应。",
+        "weight": 0.2
+      },
+      {
+        "id": "T5-S3",
+        "label": "几何精确性",
+        "observable": "边缘绝对笔直或呈数学曲线、相同物体完全复制（阵列）、倒角半径统一。",
+        "weight": 0.18
+      },
+      {
+        "id": "T5-S4",
+        "label": "渲染器特征",
+        "observable": "存在路径追踪噪点（低采样）、降噪后的涂抹感、焦散（caustics）、接触阴影（AO）过深或过匀。",
+        "weight": 0.16
+      },
+      {
+        "id": "T5-S5",
+        "label": "摄影棚式布光",
+        "observable": "柔光箱式的方形/长条形高光反射，主光辅光轮廓光结构清晰，背景为无缝渐变。",
+        "weight": 0.14
+      },
+      {
+        "id": "T5-S6",
+        "label": "无光学像差",
+        "observable": "全画面无暗角、无色差、无镜头畸变；边缘锐度与中心完全一致。",
+        "weight": 0.1
+      }
+    ],
+    "anti_signals": [
+      {
+        "id": "T5-X1",
+        "label": "可见光学缺陷",
+        "observable": "存在暗角、色差、真实传感器噪点或镜头畸变。",
+        "weight": 0.35,
+        "veto": true
+      },
+      {
+        "id": "T5-X2",
+        "label": "手绘笔触",
+        "observable": "存在连续手绘线条或笔刷边缘。",
+        "weight": 0.35,
+        "veto": true
+      },
+      {
+        "id": "T5-X3",
+        "label": "真实磨损与污渍",
+        "observable": "材质有随机、非贴图化的磨损分布，符合物理使用痕迹。",
+        "weight": 0.25
+      }
+    ]
+  },
+  "dimensions": [
+    {
+      "id": "D1",
+      "name": "建模风格与几何",
+      "ir_category": "quality_style",
+      "slot": "quality_style.modeling_style",
+      "required": true,
+      "question": "几何是怎么建的？写实还是风格化？面数密度与拓扑有什么特征？",
+      "observable_criteria": [
+        "风格：写实建模 / 硬表面（hard surface）/ 卡通渲染（toon）/ 低多边形（low poly）/ 体素（voxel）",
+        "几何处理：倒角（bevel）半径、切角（chamfer）、布尔运算痕迹、细分曲面（subdivision）的光滑度",
+        "密度：高模细节（螺丝、缝线）或低模概括",
+        "视角：透视相机或正交/等距（isometric）投影"
+      ],
+      "forbidden": ["不要在没有线框或 Clay 图的情况下断言具体拓扑（三角面/四边面）"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D2",
+      "name": "材质系统",
+      "ir_category": "appearance",
+      "slot": "appearance.material_system",
+      "required": true,
+      "question": "用了哪些材质类型？是 PBR 流程吗？有没有特殊材质层？",
+      "observable_criteria": [
+        "基础类型：金属/电介质/玻璃/塑料/陶瓷/织物/有机（皮肤、蜡、玉石）",
+        "PBR 特征：颜色贴图、粗糙度贴图、法线贴图、金属度贴图是否可辨",
+        "特殊层：清漆（clearcoat）、光泽层（sheen）、各向异性（anisotropy）、次表面散射（SSS）、半透（translucency）",
+        "贴图瑕疵：平铺重复（tiling）、UV 接缝、法线强度过高导致的\"塑料感\""
+      ],
+      "forbidden": ["不要断言具体的贴图分辨率（4K/8K）"],
+      "fallback_uncertainty": "insufficient_detail"
+    },
+    {
+      "id": "D3",
+      "name": "表面粗糙度与微观细节",
+      "ir_category": "appearance",
+      "slot": "appearance.surface_roughness",
+      "required": true,
+      "question": "表面多粗糙？高光是锐是钝？有没有微观凹凸？",
+      "observable_criteria": [
+        "粗糙度区间：镜面（0.0-0.1）/半光泽（0.2-0.4）/哑光（0.5-0.7）/极哑（0.8-1.0）",
+        "高光形状：锐利小点（低粗糙度）或大面积柔光（高粗糙度）",
+        "微观细节：法线贴图造成的凹凸、置换（displacement）造成的真实轮廓起伏、指纹级微纹理",
+        "粗糙度是否一致：全图粗糙度过于统一是渲染的典型特征"
+      ],
+      "forbidden": ["不要把粗糙度写成精确数值当成实测结果，只能给区间"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D4",
+      "name": "反射与折射",
+      "ir_category": "appearance",
+      "slot": "appearance.reflection_refraction",
+      "required": true,
+      "question": "反射清晰还是模糊？有没有折射、色散、焦散？",
+      "observable_criteria": [
+        "反射：镜面反射（清晰倒影）/ 模糊反射（roughness 提高）/ 菲涅尔效应（掠射角反射更强）",
+        "折射：玻璃/水/宝石的折射率（IOR）导致背景形变",
+        "色散：高折射率材质的彩虹色边（dispersion）",
+        "焦散：光线经透明物体聚焦形成的高亮纹（caustics）",
+        "反射内容：反射的是 HDRI 环境还是画面内实际场景"
+      ],
+      "forbidden": ["不要在无透明物体时说\"有折射\""],
+      "fallback_uncertainty": "lens_effect_ambiguous"
+    },
+    {
+      "id": "D5",
+      "name": "灯光布局",
+      "ir_category": "lighting_color",
+      "slot": "lighting_color.light_rig",
+      "required": true,
+      "question": "几盏灯？什么类型？用 HDRI 还是手动布光？",
+      "observable_criteria": [
+        "光型：面光（area light）/ 聚光（spot）/ 点光（point）/ 平行光（sun）/ 环境光（HDRI / IBL）",
+        "结构：三点布光 / 单灯 + 反光板 / 只靠 HDRI / 轮廓光分离主体",
+        "高光反射形状：柔光箱呈长方形、条形光呈长条、环形光呈环状",
+        "阴影：软硬过渡、接触阴影（contact shadow）是否过深、是否有多重阴影不一致"
+      ],
+      "forbidden": ["不要写\"灯光自然\"，必须给出光型与高光反射形状"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D6",
+      "name": "渲染引擎与全局光照特征",
+      "ir_category": "quality_style",
+      "slot": "quality_style.render_engine_signature",
+      "required": true,
+      "question": "是路径追踪还是光栅化？有没有 GI、AO、降噪痕迹？",
+      "observable_criteria": [
+        "全局光照（GI）：间接光反弹使暗部有环境色，色溢（color bleeding）",
+        "环境光遮蔽（AO）：缝隙与接触处加深，过度使用会让画面显脏",
+        "路径追踪特征：低采样噪点、降噪后的细节涂抹（denoiser smoothing）、萤火虫噪点（fireflies）",
+        "光栅化特征：反射用屏幕空间近似、阴影边缘生硬、缺间接光",
+        "无偏/有偏：焦散是否被渲染出来（很多实时引擎不渲焦散）"
+      ],
+      "forbidden": ["不要断言具体软件名（Blender/C4D/Octane），只能给引擎类别特征"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D7",
+      "name": "配色体系",
+      "ir_category": "lighting_color",
+      "slot": "lighting_color.palette_relation",
+      "required": true,
+      "question": "主色是什么？色彩关系如何？有没有色溢影响？",
+      "observable_criteria": [
+        "主色与辅色的色相，以及是否用单色/邻近/互补关系",
+        "色溢：大面积有色表面把颜色反弹到邻近物体（GI 的直接证据）",
+        "中性色倾向：产品渲染常用灰白背景 + 单一强调色",
+        "饱和度分布：风格化渲染偏高饱和，写实渲染偏低饱和"
+      ],
+      "forbidden": ["不要把\"高级灰\"当结论，要给出具体色相"],
+      "fallback_uncertainty": "unsupported_observation"
+    },
+    {
+      "id": "D8",
+      "name": "后期处理",
+      "ir_category": "quality_style",
+      "slot": "quality_style.post_process",
+      "required": true,
+      "question": "后期加了什么？有哪些典型的渲染后期痕迹？",
+      "observable_criteria": [
+        "光晕：泛光（bloom）/ 镜头光斑（lens flare）/ 眩光（glare）",
+        "色彩：色调映射（ACES / Filmic / Reinhard）造成的柔和高光滚降",
+        "缺陷模拟：暗角、色差、胶片颗粒、景深模糊（后处理 DOF 的边缘瑕疵）",
+        "降噪痕迹：平滑涂抹、细节丢失、条纹状伪影"
+      ],
+      "forbidden": ["不要断言使用了某个具体色调映射曲线，只能描述高光滚降的形态"],
+      "fallback_uncertainty": "unsupported_observation"
+    }
+  ],
+  "lexicon": [
+    {
+      "term_en": "PBR (physically based rendering)",
+      "term_zh": "基于物理的渲染",
+      "definition": "用一套符合能量守恒的材质参数（基础色、金属度、粗糙度、法线）描述表面，使材质在不同光照下表现一致。",
+      "visual_criteria": "金属呈暗色漫反射 + 有色高光，非金属呈亮色漫反射 + 白色高光。",
+      "prompt_usage": "physically based rendering materials",
+      "aliases": ["PBR 材质"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "roughness",
+      "term_zh": "粗糙度",
+      "definition": "PBR 中控制表面微观不平整程度的参数，决定高光的锐利程度与反射的模糊程度。",
+      "visual_criteria": "高光越小越锐 = 粗糙度越低；反射越模糊 = 粗糙度越高。",
+      "prompt_usage": "low roughness, sharp reflections",
+      "aliases": ["表面粗糙度"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "metalness",
+      "term_zh": "金属度",
+      "definition": "PBR 中区分金属与非金属的参数。金属无漫反射、高光带材质本色；非金属有漫反射、高光近白。",
+      "visual_criteria": "观察高光颜色是否被材质染色。",
+      "prompt_usage": "metallic surface with tinted reflections",
+      "aliases": ["金属度"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "normal map",
+      "term_zh": "法线贴图",
+      "definition": "用颜色通道记录表面法线方向的贴图，在不增加面数的前提下伪造凹凸细节。",
+      "visual_criteria": "细节有凹凸感但轮廓剪影仍是平的（侧面看轮廓没有起伏）。",
+      "prompt_usage": "detailed normal map surface",
+      "aliases": ["法线"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "displacement",
+      "term_zh": "置换",
+      "definition": "真正改变几何顶点位置的贴图，会改变物体轮廓，与法线贴图的区别在于轮廓是否起伏。",
+      "visual_criteria": "侧视时物体边缘呈凹凸不平。",
+      "prompt_usage": "displaced surface detail",
+      "aliases": ["置换贴图"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "global illumination (GI)",
+      "term_zh": "全局光照",
+      "definition": "计算光线多次反弹的间接光照，使暗部有环境色、物体之间产生色溢。",
+      "visual_criteria": "阴影侧不是死黑而是带环境色，邻近有色物体把颜色反射到其他表面。",
+      "prompt_usage": "global illumination, color bleeding",
+      "aliases": ["GI", "间接光"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "ambient occlusion (AO)",
+      "term_zh": "环境光遮蔽",
+      "definition": "根据几何遮挡关系在缝隙与接触处加深阴影的技术，用于增强体积感；过度使用会让画面脏。",
+      "visual_criteria": "物体接触处与凹陷处出现均匀的深色晕染。",
+      "prompt_usage": "subtle ambient occlusion",
+      "aliases": ["AO"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "ray tracing",
+      "term_zh": "光线追踪",
+      "definition": "通过模拟光线传播路径计算反射、折射与阴影的渲染方法，能产生物理正确的焦散与反射。",
+      "visual_criteria": "反射内容与场景一致、透明物体下有聚焦亮纹（焦散）。",
+      "prompt_usage": "ray traced reflections and caustics",
+      "aliases": ["光追"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "caustics",
+      "term_zh": "焦散",
+      "definition": "光线经透明或反射物体聚焦后在表面形成的明亮纹路，是路径追踪的标志性效果。",
+      "visual_criteria": "玻璃杯或水面下方出现明亮、有纹路的亮斑。",
+      "prompt_usage": "caustic light patterns",
+      "aliases": ["焦散光斑"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "HDRI / IBL",
+      "term_zh": "高动态范围环境贴图 / 基于图像的光照",
+      "definition": "用全景 HDR 照片作为环境光源与反射源，能一次性提供真实的环境光与反射内容。",
+      "visual_criteria": "反射里能看到摄影棚灯、天空或户外环境，且反射内容与画面背景不一致。",
+      "prompt_usage": "HDRI studio lighting",
+      "aliases": ["环境贴图", "IBL"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "subsurface scattering (SSS)",
+      "term_zh": "次表面散射",
+      "definition": "光进入半透材质内部散射后透出，是皮肤、蜡、玉石、牛奶通透感的物理来源。",
+      "visual_criteria": "逆光下边缘透出暖色或红色带。",
+      "prompt_usage": "subsurface scattering on skin",
+      "aliases": ["SSS"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "clearcoat",
+      "term_zh": "清漆层",
+      "definition": "在基础材质上叠加的一层光滑透明涂层，用于模拟车漆、指甲油、上釉陶瓷。",
+      "visual_criteria": "基础材质之上有一层独立、锐利的反射。",
+      "prompt_usage": "clearcoat car paint",
+      "aliases": ["清漆"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "anisotropy",
+      "term_zh": "各向异性",
+      "definition": "表面微观结构有方向性时反射沿特定方向拉伸，如拉丝金属、光盘、头发。",
+      "visual_criteria": "高光呈沿一个方向拉长的条状，而非圆形。",
+      "prompt_usage": "anisotropic brushed metal",
+      "aliases": ["各向异性反射"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "clay render",
+      "term_zh": "黏土渲染",
+      "definition": "统一用中性灰哑光材质渲染，用于检查造型与光影而不受材质干扰。",
+      "visual_criteria": "全画面单一灰白材质、无颜色、只有明暗层次。",
+      "prompt_usage": "clay render, neutral grey material",
+      "aliases": ["白模"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "isometric",
+      "term_zh": "等距视角",
+      "definition": "正交投影下的等距视图，无透视收缩，常用于小场景与游戏资产展示。",
+      "visual_criteria": "平行线保持平行、无消失点、三个轴向等角。",
+      "prompt_usage": "isometric view, orthographic projection",
+      "aliases": ["等轴测"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "hard surface modeling",
+      "term_zh": "硬表面建模",
+      "definition": "以机械、工业产品为主的建模方向，强调精确的倒角、切角与结构分割线。",
+      "visual_criteria": "边缘有统一半径的倒角、面板有明确的分割缝、无有机曲面。",
+      "prompt_usage": "hard surface modeling with beveled edges",
+      "aliases": ["硬表面"],
+      "confidence_grade": "A"
+    },
+    {
+      "term_en": "denoiser",
+      "term_zh": "降噪器",
+      "definition": "对低采样路径追踪结果做平滑处理的后处理步骤，会牺牲细节并可能产生涂抹或条纹伪影。",
+      "visual_criteria": "细节区域呈平滑涂抹感，细密纹理被抹掉，偶见条纹或块状伪影。",
+      "prompt_usage": "clean denoised render",
+      "aliases": ["降噪"],
+      "confidence_grade": "B"
+    },
+    {
+      "term_en": "tone mapping",
+      "term_zh": "色调映射",
+      "definition": "把高动态范围渲染结果压缩到显示范围的曲线，决定高光滚降的形态与整体对比。",
+      "visual_criteria": "高光不是硬切白，而是有平滑压缩过渡。",
+      "prompt_usage": "filmic tone mapping",
+      "aliases": ["色调映射"],
+      "confidence_grade": "A"
+    }
+  ],
+  "keywords": [
+    { "tag": "octane render", "zh": "Octane 渲染", "ir_category": "quality_style", "when": "路径追踪 + 强反射 + 轻微光晕", "avoid_when": "光栅化实时引擎质感" },
+    { "tag": "redshift render", "zh": "Redshift 渲染", "ir_category": "quality_style", "when": "产品级路径追踪、干净高光", "avoid_when": "有明显实时渲染近似" },
+    { "tag": "unreal engine 5", "zh": "虚幻引擎 5", "ir_category": "quality_style", "when": "实时渲染、屏幕空间反射、Lumen 风格 GI", "avoid_when": "离线路径追踪的焦散细节" },
+    { "tag": "blender cycles", "zh": "Blender Cycles", "ir_category": "quality_style", "when": "路径追踪噪点 + 自然 GI", "avoid_when": "纯光栅化画面" },
+    { "tag": "physically based rendering", "zh": "PBR 渲染", "ir_category": "appearance", "when": "材质参数符合能量守恒", "avoid_when": "风格化非物理材质" },
+    { "tag": "low roughness mirror finish", "zh": "低粗糙度镜面", "ir_category": "appearance", "when": "反射清晰锐利", "avoid_when": "哑光表面" },
+    { "tag": "anisotropic brushed metal", "zh": "各向异性拉丝金属", "ir_category": "appearance", "when": "高光沿单一方向拉长", "avoid_when": "圆形高光的抛光面" },
+    { "tag": "subsurface scattering", "zh": "次表面散射", "ir_category": "appearance", "when": "半透材质逆光透出暖色", "avoid_when": "完全不透明硬表面" },
+    { "tag": "clearcoat car paint", "zh": "清漆车漆", "ir_category": "appearance", "when": "基础色之上有独立锐利反射层", "avoid_when": "单一材质层" },
+    { "tag": "ray traced reflections and caustics", "zh": "光线追踪反射与焦散", "ir_category": "appearance", "when": "反射与场景一致、有聚焦亮纹", "avoid_when": "屏幕空间近似反射" },
+    { "tag": "HDRI studio lighting", "zh": "HDRI 摄影棚光照", "ir_category": "lighting_color", "when": "反射中出现柔光箱或环境图", "avoid_when": "纯手动布光无环境反射" },
+    { "tag": "three point studio lighting", "zh": "三点棚拍布光", "ir_category": "lighting_color", "when": "主光辅光轮廓光结构清晰", "avoid_when": "单一环境光" },
+    { "tag": "subtle ambient occlusion", "zh": "轻微环境光遮蔽", "ir_category": "lighting_color", "when": "缝隙与接触处自然加深", "avoid_when": "AO 过重导致画面脏" },
+    { "tag": "global illumination color bleeding", "zh": "GI 色溢", "ir_category": "lighting_color", "when": "有色表面把颜色反射到邻近物体", "avoid_when": "无间接光的硬阴影画面" },
+    { "tag": "isometric orthographic view", "zh": "等距正交视角", "ir_category": "composition", "when": "无透视收缩、平行线保持平行", "avoid_when": "明显透视的相机视角" },
+    { "tag": "clay render", "zh": "白模渲染", "ir_category": "quality_style", "when": "全图单一灰白哑光材质", "avoid_when": "有完整材质与颜色" },
+    { "tag": "hard surface modeling", "zh": "硬表面建模", "ir_category": "quality_style", "when": "工业结构 + 统一倒角", "avoid_when": "有机曲面或无结构分割" },
+    { "tag": "neutral seamless background", "zh": "中性无缝背景", "ir_category": "background", "when": "纯色或渐变摄影棚底", "avoid_when": "叙事性环境背景" }
+  ],
+  "suppression": [
+    "photograph",
+    "film grain",
+    "lens distortion",
+    "vignetting",
+    "chromatic aberration",
+    "dust",
+    "scratches",
+    "fingerprints",
+    "hand drawn",
+    "brush strokes",
+    "watermark"
+  ],
+  "compile": {
+    "slot_order_override": ["appearance", "lighting_color", "quality_style", "composition"],
+    "must_keep": ["appearance.material_system", "appearance.surface_roughness", "lighting_color.light_rig"],
+    "budget_hint": { "positive_terms": 70, "lexicon_terms": 8 },
+    "note": "渲染类把 appearance 提到最前：材质系统与粗糙度是这类图最重要的可复现参数。抑制词必须挡掉 film grain / vignetting / chromatic aberration —— 这三个是让渲染\"看起来像照片\"的关键差异项，写进抑制等于主动强化渲染感。"
+  },
+  "quality_gates": [
+    "必须给出材质类型 + 粗糙度区间 + 灯光类型三项，缺一项进 uncertainties。",
+    "不得断言具体软件名称，只能给渲染器类别特征（路径追踪 / 光栅化）。",
+    "反射内容必须说明是 HDRI 环境还是画面内实际场景，这决定提示词里写不写环境贴图。",
+    "抑制词必须包含 film grain、vignetting、chromatic aberration 三项。",
+    "不得把法线贴图造成的凹凸写成置换（轮廓是否起伏是唯一判据）。"
+  ],
+  "sources": [
+    { "title": "内部结构定义：lib/config/categories.js", "url": "file://lib/config/categories.js", "note": "ir_category 取值来源。" },
+    { "title": "PBR / GI / AO / SSS / 焦散 / 色调映射等渲染术语为图形学通行定义，置信度 A；clay render、denoiser 为行业工作流用语，置信度 B", "url": "file://docs/rules/STANDARD_RULE_LIBRARY.md", "note": "无单一权威在线来源可用时按通行定义收录并标注置信度。" }
+  ]
+}

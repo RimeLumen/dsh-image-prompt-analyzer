@@ -1,0 +1,51 @@
+{
+  "schema_version": "1.0",
+  "config_id": "detail-high",
+  "display_name": "高细节密度",
+  "description": "尽可能完整地保留观察到的特征，包括低置信度项与未归类项，用于人工复核与后续收敛。",
+  "enabled": true,
+  "strict_mode": false,
+
+  "detail_density": "high",
+
+  "composition_min_importance": 0,
+  "camera_min_importance": 0,
+  "subject_min_importance": 0,
+  "other_min_importance": 0,
+  "low_confidence_threshold": 0.15,
+
+  "max_positive_terms": 200,
+  "max_negative_terms": 100,
+
+  "suppression": {
+    "general_quality": true,
+    "structural_error": true,
+    "scene_specific": true
+  },
+
+  "category_priority_overrides": {},
+
+  "analysis_weights": {
+    "composition": 0.3,
+    "camera": 0.25,
+    "subject": 0.15,
+    "pose_action": 0.1,
+    "clothing_appearance": 0.08,
+    "background": 0.05,
+    "lighting_color": 0.04,
+    "expression": 0.03
+  },
+
+  "must_keep_categories": ["composition", "camera", "subject"],
+
+  "natural_language_supplement": {
+    "enabled": true,
+    "max_sentences": 3
+  },
+
+  "metadata": {
+    "authored_for": "preset-design-v2",
+    "notes": "低置信度项进入正向提示词时会被标记，模型侧仍能看到它们的置信度；把阈值压到 0.15 意味着几乎不丢观察，代价是提示词更容易超过目标模型的项数上限。是否采用由用户决定。",
+    "analysis_weights_note": "与另外两份 preset 相同：文档 §3.3 的八个初始权重，合计 1.00，待验证。"
+  }
+}

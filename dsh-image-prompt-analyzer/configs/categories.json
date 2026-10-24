@@ -1,0 +1,147 @@
+{
+  "_note": "内部分类注册表。规则文件里的 ir_category 与 slot 前缀只能取 internal_categories[].category_id。此文件由宿主项目 lib/config/categories.js 导出，改分类请改那边再重新生成。",
+  "internal_categories": [
+    {
+      "category_id": "composition",
+      "display_name": "构图与画面组织",
+      "description": "景别、构图方式、画面分割、视线引导。",
+      "layer": 1
+    },
+    {
+      "category_id": "camera",
+      "display_name": "镜头与视角",
+      "description": "视角高度、透视强度、镜头方向；不推断精确焦距。",
+      "layer": 1
+    },
+    {
+      "category_id": "subject",
+      "display_name": "主体与空间关系",
+      "description": "主体数量、位置、前后景、遮挡、持有与佩戴关系。",
+      "layer": 2
+    },
+    {
+      "category_id": "pose_action",
+      "display_name": "动作与姿态",
+      "description": "可观察的姿势与动作；不确定的动作只记 tentative。",
+      "layer": 3
+    },
+    {
+      "category_id": "appearance",
+      "display_name": "主体外观",
+      "description": "发型、发色、瞳色、体型、体表特征。",
+      "layer": 4
+    },
+    {
+      "category_id": "clothing",
+      "display_name": "服装与附属物",
+      "description": "穿着物、佩戴物、手持物、周围物件的区分。",
+      "layer": 4
+    },
+    {
+      "category_id": "expression",
+      "display_name": "表情与细节",
+      "description": "可观察的面部表情与局部细节；推断出的情绪必须标为不确定。",
+      "layer": 4
+    },
+    {
+      "category_id": "background",
+      "display_name": "背景与场景",
+      "description": "场景类型、背景物件、天气与时间。",
+      "layer": 5
+    },
+    {
+      "category_id": "lighting_color",
+      "display_name": "光影与色彩",
+      "description": "光源方向、明暗对比、整体色彩倾向。",
+      "layer": 5
+    },
+    {
+      "category_id": "quality_style",
+      "display_name": "质量与风格",
+      "description": "质量词、画风、媒介、完成度。",
+      "layer": 6
+    },
+    {
+      "category_id": "character",
+      "display_name": "角色",
+      "description": "具体角色名（hatsune_miku 这类）。文档 §5.2 的 12 类里没有它，但 Anima 官方标签顺序明确含 [角色]，Illustrious 本地规则的固定输出结构也有「角色/IP 区」，且 Danbooru 原生 category 直接提供这个信号，所以单列一类。",
+      "layer": 2
+    },
+    {
+      "category_id": "copyright",
+      "display_name": "作品",
+      "description": "角色所属作品（vocaloid 这类）。理由同 character：Anima 官方顺序含 [作品]，Illustrious 规则含「角色/IP 区」，Danbooru 原生 category 直接提供。",
+      "layer": 2
+    },
+    {
+      "category_id": "artist",
+      "display_name": "画师",
+      "description": "画师标签。单列一类的硬理由是模型 profile 的 `syntax.artist_prefix`：没有这个分类，编译器无法把画师标签与其他标签区分开，`@` 前缀就是一条无法生效的配置。Anima 官方顺序含 [画师]，Illustrious 本地规则含「画师区」。",
+      "layer": 6
+    },
+    {
+      "category_id": "suppression",
+      "display_name": "抑制提示词",
+      "description": "负向提示词用的标签，只出现在抑制区。",
+      "layer": 0
+    },
+    {
+      "category_id": "unsorted",
+      "display_name": "未归类",
+      "description": "知识库尚未映射到内部分类的标签，保留原始信息用。文档 §5.2 没有这一项，它是实现上的兜底桶：没有它，未映射的观察只能被丢掉，与 §5.1「保留原始名称」冲突。",
+      "layer": 0
+    }
+  ],
+  "positive_layers": [
+    {
+      "layer": 1,
+      "name": "构图与镜头",
+      "description": "构图方式与镜头视角，决定画面骨架。"
+    },
+    {
+      "layer": 2,
+      "name": "主体与空间关系",
+      "description": "主体数量、位置、前后景与遮挡。"
+    },
+    {
+      "layer": 3,
+      "name": "动作与姿态",
+      "description": "主体的姿势与动作。"
+    },
+    {
+      "layer": 4,
+      "name": "主体外观与服装",
+      "description": "外貌特征与穿着佩戴。"
+    },
+    {
+      "layer": 5,
+      "name": "场景光影色彩",
+      "description": "背景、光源与整体色调。"
+    },
+    {
+      "layer": 6,
+      "name": "模型特定修饰",
+      "description": "质量词、风格词与模型专属修饰。"
+    }
+  ],
+  "default_positive_order": [
+    "composition",
+    "camera",
+    "subject",
+    "character",
+    "copyright",
+    "pose_action",
+    "appearance",
+    "clothing",
+    "expression",
+    "background",
+    "lighting_color",
+    "quality_style",
+    "artist"
+  ],
+  "must_keep_categories": [
+    "composition",
+    "camera",
+    "subject"
+  ]
+}
