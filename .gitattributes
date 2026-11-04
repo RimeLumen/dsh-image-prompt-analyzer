@@ -1,0 +1,9 @@
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.sqlite3 binary
+*.sqlite3-wal binary
+*.sqlite3-shm binary
+*.csv text eol=lf

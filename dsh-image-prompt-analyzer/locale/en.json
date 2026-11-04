@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Image Prompt Reverse",
+    "description": "Analyzes an image into a unified visual-description IR, then compiles it into positive / suppression prompts and control suggestions for a target model profile."
+  }
+}

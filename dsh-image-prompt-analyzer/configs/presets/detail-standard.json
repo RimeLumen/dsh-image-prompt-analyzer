@@ -1,0 +1,51 @@
+{
+  "schema_version": "1.0",
+  "config_id": "detail-standard",
+  "display_name": "标准细节密度",
+  "description": "默认 preset。保留全部类别的可用特征，只过滤明显不可用的低置信度项。",
+  "enabled": true,
+  "strict_mode": false,
+
+  "detail_density": "standard",
+
+  "composition_min_importance": 0,
+  "camera_min_importance": 0,
+  "subject_min_importance": 0,
+  "other_min_importance": 0,
+  "low_confidence_threshold": 0.4,
+
+  "max_positive_terms": 120,
+  "max_negative_terms": 80,
+
+  "suppression": {
+    "general_quality": true,
+    "structural_error": true,
+    "scene_specific": true
+  },
+
+  "category_priority_overrides": {},
+
+  "analysis_weights": {
+    "composition": 0.3,
+    "camera": 0.25,
+    "subject": 0.15,
+    "pose_action": 0.1,
+    "clothing_appearance": 0.08,
+    "background": 0.05,
+    "lighting_color": 0.04,
+    "expression": 0.03
+  },
+
+  "must_keep_categories": ["composition", "camera", "subject"],
+
+  "natural_language_supplement": {
+    "enabled": false,
+    "max_sentences": 2
+  },
+
+  "metadata": {
+    "authored_for": "preset-design-v2",
+    "notes": "low_confidence_threshold 取 0.4 是本插件自选的初始值，不是任何模型的官方数字；它只决定哪些特征进正向提示词，不进正向的特征一律转入 uncertainties 而不是被丢弃。",
+    "analysis_weights_note": "这八个数就是文档 §3.3 那张表，合计 1.00，**是待验证的初始产品权重**，不是测出来的最佳参数。它们只在视觉模型没给某条观察的重要度时起作用（给了就用模型给的），所以在配置里改的是\"兜底\"，不是\"覆盖\"。键是文档的八个分析对象，不是十三个内部分类：「服装与外观」一行同时覆盖 clothing 与 appearance。"
+  }
+}

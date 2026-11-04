@@ -1,0 +1,23 @@
+# Runtime state — created at first run, never part of the package.
+# data/ holds the local SQLite knowledge base, per-task temp dirs and trace snapshots.
+dsh-image-prompt-analyzer/data/
+dsh-image-prompt-analyzer/logs/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Node tooling
+node_modules/
+.pnpm-store/
+
+# Editor / OS noise
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# Ad-hoc scratch files
+.tmp/
+*.tmp
+*.log
