@@ -1,0 +1,5 @@
+# Python bytecode is generated per-interpreter (cpython-310, cpython-312, …)
+# and is not portable. It must never ship: the plugin compiles decode_helper.py
+# on the user's own interpreter at first run.
+__pycache__/
+*.pyc

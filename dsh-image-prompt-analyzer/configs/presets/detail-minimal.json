@@ -1,0 +1,51 @@
+{
+  "schema_version": "1.0",
+  "config_id": "detail-minimal",
+  "display_name": "极简细节密度",
+  "description": "只保留高重要度特征，用于快速试跑或 token 紧张的场景。文档 §6.6 明确：即使极简模式也不能删除构图、镜头与主体关系。",
+  "enabled": true,
+  "strict_mode": false,
+
+  "detail_density": "minimal",
+
+  "composition_min_importance": 0.2,
+  "camera_min_importance": 0.2,
+  "subject_min_importance": 0.2,
+  "other_min_importance": 0.5,
+  "low_confidence_threshold": 0.6,
+
+  "max_positive_terms": 40,
+  "max_negative_terms": 30,
+
+  "suppression": {
+    "general_quality": true,
+    "structural_error": true,
+    "scene_specific": false
+  },
+
+  "category_priority_overrides": {},
+
+  "analysis_weights": {
+    "composition": 0.3,
+    "camera": 0.25,
+    "subject": 0.15,
+    "pose_action": 0.1,
+    "clothing_appearance": 0.08,
+    "background": 0.05,
+    "lighting_color": 0.04,
+    "expression": 0.03
+  },
+
+  "must_keep_categories": ["composition", "camera", "subject"],
+
+  "natural_language_supplement": {
+    "enabled": false,
+    "max_sentences": 1
+  },
+
+  "metadata": {
+    "authored_for": "preset-design-v2",
+    "notes": "must_keep_categories 在这里的作用是硬保底：即使 composition 下所有特征的重要度都低于 composition_min_importance，也至少要保留一条最可信的构图特征。scene_specific 抑制关闭，因为极简模式优先减少 token 占用，不再追加场景专用抑制项。",
+    "analysis_weights_note": "与另外两份 preset 相同：文档 §3.3 的八个初始权重，合计 1.00，待验证。细节密度改的是门槛与配额，不该顺手改权重——两件事混在一起，输出变了也说不清是哪一个造成的。"
+  }
+}

@@ -1,0 +1,29 @@
+# ============================================================================
+# dsh-image-prompt-analyzer —— bundle patch
+# ============================================================================
+# 把本插件的 Host 行挂进 DSH 配置树。
+#
+# - insert：往配置树添加新的插件行（entry）
+# - id 必须全局唯一，用包名以免与其它插件冲突
+# - Host 行（name: '@RimeLumen/dsh-image-prompt-analyzer'）解析到 index.js
+# - config 里的字段只放"进程级"开关；真正的业务配置全部在包内 configs/*.json，
+#   由插件自己在运行时读取与校验
+#
+# 【为什么这里只有一行，没有 Client 行】
+#   Client 半侧是**自动发现**的：package.json 声明了 `dsh.client` 且 exports 里有
+#   `./client`，DSH 的模块系统就会把这个包同时扫描为"浏览器插件"，给页面提供
+#   /plugins/@RimeLumen/dsh-image-prompt-analyzer/client.js。
+#   在这里再写一行 `name: '@RimeLumen/dsh-image-prompt-analyzer/client'` 会让宿主把它
+#   当成第二个 **Host** 插件去 import，而 client.js 里第一句就是
+#   `window.__ModuleLoader__.load(...)` —— 宿主进程里没有 window，
+#   结果是启动时一句「1 entry did not activate ... failed to import」，
+#   面板永远不出现，而插件其余部分看起来一切正常。
+# ============================================================================
+
+- insert:
+    - id: '@RimeLumen/dsh-image-prompt-analyzer'
+      name: '@RimeLumen/dsh-image-prompt-analyzer'
+      config:
+        configDir: './configs'
+        dataDir: './data'
+        logDir: './logs'

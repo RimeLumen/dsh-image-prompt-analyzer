@@ -1,0 +1,457 @@
+openapi: 3.1.0
+info:
+  title: dsh-image-prompt-analyzer 结果面板只读接口
+  version: 1.0.0
+  summary: 只读结果面板的 HTTP 契约（规范文本见 docs/PANEL_API.md）
+  description: |
+    本契约只描述**已存在**的接口，不新增端点。
+
+    只读承诺：除 GET/HEAD 外的任何方法都必须被拒绝（405 + PANEL_METHOD_NOT_ALLOWED）。
+    前缀固定为 `/dsh-image-prompt-analyzer/api`，不可配置。
+
+    关于 403：桌面端在路由分发之前可能返回 `403` + `text/plain` + `forbidden`。
+    这不是面板响应，而是宿主渲染器能力门禁；面板 handler 未被调用。见 docs/PANEL_API.md §4.2。
+  license:
+    name: UNLICENSED
+servers:
+  - url: http://127.0.0.1:43120
+    description: 默认回环地址；实际地址按规范 §3 发现
+tags:
+  - name: panel
+    description: 只读结果面板
+paths:
+  /dsh-image-prompt-analyzer/api/:
+    get:
+      tags: [panel]
+      operationId: getPanelRoot
+      summary: 面板摘要（与 /summary、/tasks 等价）
+      responses:
+        '200':
+          description: 与 /summary 剔除 generated_at 后逐字段相等
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Summary' }
+        '403':
+          $ref: '#/components/responses/HostGate'
+        '500':
+          $ref: '#/components/responses/PanelError'
+  /dsh-image-prompt-analyzer/api/summary:
+    get:
+      tags: [panel]
+      operationId: getPanelSummary
+      summary: 面板摘要（推荐入口）
+      parameters:
+        - $ref: '#/components/parameters/TaskIdQueryIgnored'
+      responses:
+        '200':
+          description: 面板摘要
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Summary' }
+        '403':
+          $ref: '#/components/responses/HostGate'
+        '500':
+          $ref: '#/components/responses/PanelError'
+    post:
+      tags: [panel]
+      operationId: postPanelSummary
+      summary: 只读拒绝（用于验证 405 语义）
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '403':
+          $ref: '#/components/responses/HostGate'
+    put: &readonlyReject
+      tags: [panel]
+      operationId: putPanelSummary
+      summary: 只读拒绝
+      responses:
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '403':
+          $ref: '#/components/responses/HostGate'
+    delete:
+      <<: *readonlyReject
+      operationId: deletePanelSummary
+    patch:
+      <<: *readonlyReject
+      operationId: patchPanelSummary
+  /dsh-image-prompt-analyzer/api/tasks:
+    get:
+      tags: [panel]
+      operationId: listPanelTasks
+      summary: 面板摘要（列表视图；实现与 /summary 共用分支）
+      responses:
+        '200':
+          description: 与 /summary 同构
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Summary' }
+        '403':
+          $ref: '#/components/responses/HostGate'
+        '500':
+          $ref: '#/components/responses/PanelError'
+  /dsh-image-prompt-analyzer/api/tasks/{task_id}:
+    get:
+      tags: [panel]
+      operationId: getPanelTask
+      summary: 单条分析结果（完整形态）
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          description: 面板条目的 task_id（需要 URL 编码）
+          schema: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: 单条结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskEnvelope' }
+        '403':
+          $ref: '#/components/responses/HostGate'
+        '404':
+          description: 任务不存在；前缀下未知路径也复用本错误码
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PanelError' }
+              examples:
+                taskNotFound:
+                  value:
+                    schema_version: '1.1'
+                    error_code: PANEL_TASK_NOT_FOUND
+                    error_group: task
+                    message: 面板里没有 task_id 为 does-not-exist 的分析结果。
+                    suggested_fix: 面板只保留本次运行期最近若干条结果，重启后会清空；长期保存请用 save_experience 写入经验库。
+        '500':
+          $ref: '#/components/responses/PanelError'
+  /dsh-image-prompt-analyzer/api/workbench/image:
+    post:
+      tags: [workbench]
+      operationId: workbenchUploadImage
+      summary: 上传本地图片字节到工作台受管目录（v1.1）
+      description: 请求体是原始图片字节；name 查询参数会被净化成 basename。字节上限走 image.max_bytes。
+      parameters:
+        - name: name
+          in: query
+          required: false
+          description: 展示名与扩展名提示；路径分隔符与 .. 会被剥掉
+          schema: { type: string, default: upload }
+      responses:
+        '200':
+          description: 已落盘
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schema_version: { type: string, const: '1.1' }
+                  status: { type: string, const: ok }
+                  result:
+                    type: object
+                    properties:
+                      path: { type: string }
+                      size_bytes: { type: integer, minimum: 0 }
+                      name: { type: string }
+        '400': { $ref: '#/components/responses/PanelError' }
+        '403': { $ref: '#/components/responses/WorkbenchOriginRejected' }
+        '405': { $ref: '#/components/responses/PanelError' }
+        '500': { $ref: '#/components/responses/PanelError' }
+  /dsh-image-prompt-analyzer/api/workbench/fetch:
+    post:
+      tags: [workbench]
+      operationId: workbenchFetchUrl
+      summary: 宿主按 URL 下载图片到工作台受管目录（v1.1）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              additionalProperties: false
+              properties:
+                url: { type: string, minLength: 1, description: 仅 http/https }
+      responses:
+        '200':
+          description: 已下载落盘
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schema_version: { type: string, const: '1.1' }
+                  status: { type: string, const: ok }
+                  result:
+                    type: object
+                    properties:
+                      path: { type: string }
+                      size_bytes: { type: integer, minimum: 0 }
+                      source_url: { type: string }
+        '400': { $ref: '#/components/responses/PanelError' }
+        '403': { $ref: '#/components/responses/WorkbenchOriginRejected' }
+        '405': { $ref: '#/components/responses/PanelError' }
+  /dsh-image-prompt-analyzer/api/workbench/analyze:
+    post:
+      tags: [workbench]
+      operationId: workbenchAnalyze
+      summary: 对工作台图片跑完整分析管线（与 analyze_image_prompt 工具同形，v1.1）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [image_path]
+              additionalProperties: false
+              properties:
+                image_path: { type: string, minLength: 1 }
+                target_profile: { type: string, description: 缺省时由信封给 MODEL_PROFILE_NOT_SELECTED }
+                detail_level: { type: string, enum: [minimal, standard, high] }
+                include_negative: { type: boolean, default: true }
+                save_experience: { type: boolean, default: false }
+      responses:
+        '200':
+          description: 与工具逐字段一致的 2.0 信封（含失败信封）
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { $ref: '#/components/responses/PanelError' }
+        '403': { $ref: '#/components/responses/WorkbenchOriginRejected' }
+        '405': { $ref: '#/components/responses/PanelError' }
+  /dsh-image-prompt-analyzer/api/workbench/cleanup:
+    post:
+      tags: [workbench]
+      operationId: workbenchCleanup
+      summary: 立即清空工作台受管目录（v1.1）
+      responses:
+        '200':
+          description: 清除结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schema_version: { type: string, const: '1.1' }
+                  status: { type: string, const: ok }
+                  result:
+                    type: object
+                    properties:
+                      deleted_files: { type: integer, minimum: 0 }
+                      freed_bytes: { type: integer, minimum: 0 }
+        '403': { $ref: '#/components/responses/WorkbenchOriginRejected' }
+        '405': { $ref: '#/components/responses/PanelError' }
+components:
+  parameters:
+    TaskIdQueryIgnored:
+      name: unused
+      in: query
+      required: false
+      deprecated: true
+      description: 占位参数，面板忽略所有查询串。
+      schema: { type: string }
+  responses:
+    HostGate:
+      description: |
+        宿主渲染器能力门禁响应，**不是**面板响应。
+        content-type 为 text/plain，body 恰为 `forbidden`。
+        面板 handler 未被调用，不能用它判断接口是否正常。
+      content:
+        text/plain:
+          schema:
+            type: string
+            const: forbidden
+    MethodNotAllowed:
+      description: 只读拒绝
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PanelError' }
+          examples:
+            methodNotAllowed:
+              value:
+                schema_version: '1.1'
+                error_code: PANEL_METHOD_NOT_ALLOWED
+                error_group: method
+                message: 结果面板是只读的，不接受 POST。
+                suggested_fix: 改变状态请用工具，不要从浏览器直接写。
+    PanelError:
+      description: 面板内部错误或语义错误
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PanelError' }
+    WorkbenchOriginRejected:
+      description: 工作台动作的同源校验不过（缺 Origin 或与 Host 不匹配）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PanelError' }
+          examples:
+            originRejected:
+              value:
+                schema_version: '1.1'
+                error_code: PANEL_ORIGIN_REJECTED
+                error_group: W
+                message: 工作台动作要求同源请求：缺少 Origin 或与 Host 不匹配。
+                suggested_fix: 请在 DSH 页面里操作工作台；跨站或命令行直打一律拒绝。
+  schemas:
+    Summary:
+      type: object
+      required:
+        - schema_version
+        - generated_at
+        - plugin_version
+        - read_only
+        - totals
+        - by_profile
+        - recent_tasks
+        - storage
+        - configs
+        - note
+      additionalProperties: true
+      properties:
+        schema_version:
+          type: string
+          const: '1.1'
+          description: 主版本变化即不兼容
+        generated_at:
+          type: string
+          format: date-time
+          description: 每次请求重新生成；一致性比较时必须剔除
+        plugin_version:
+          type: [string, 'null']
+        read_only:
+          type: boolean
+          const: true
+        totals:
+          type: object
+          required: [tasks, recent_limit, experiences, rated_experiences]
+          additionalProperties: false
+          properties:
+            tasks: { type: integer, minimum: 0 }
+            recent_limit: { type: integer, minimum: 1, maximum: 200 }
+            experiences:
+              type: [integer, 'null']
+              description: 经验库不可用时为 null
+            rated_experiences:
+              type: [integer, 'null']
+        by_profile:
+          type: object
+          description: 档案 → 经验条数；空对象表示还没有经验，不是统计失败
+          additionalProperties: { type: integer, minimum: 0 }
+        recent_tasks:
+          type: array
+          items: { $ref: '#/components/schemas/RecentTask' }
+        storage:
+          type: object
+          required: [size, limit, database_path]
+          additionalProperties: false
+          properties:
+            size: { type: integer, minimum: 0 }
+            limit: { type: integer, minimum: 1, maximum: 200 }
+            database_path:
+              type: [string, 'null']
+        configs:
+          type: [object, 'null']
+          description: 配置快照；runtime 未就绪时为 null
+        note:
+          type: string
+          description: 必须至少包含 6 个工具名，见规范 §5.4
+    RecentTask:
+      type: object
+      required:
+        - task_id
+        - created_at
+        - image
+        - target
+        - target_profile
+        - positive_prompt
+        - negative_prompt
+        - positive_term_count
+        - negative_term_count
+        - low_confidence_count
+        - dropped_count
+        - knowledge_base_used
+        - saved_experience_id
+        - warning_count
+      additionalProperties: true
+      properties:
+        task_id: { type: string, minLength: 1 }
+        created_at: { type: string, format: date-time }
+        image: { type: [object, 'null'] }
+        target: { type: [object, 'null'] }
+        target_profile: { type: [string, 'null'] }
+        positive_prompt: { type: [string, 'null'] }
+        negative_prompt: { type: [string, 'null'] }
+        positive_term_count: { type: integer, minimum: 0 }
+        negative_term_count: { type: integer, minimum: 0 }
+        low_confidence_count: { type: integer, minimum: 0 }
+        dropped_count: { type: integer, minimum: 0 }
+        knowledge_base_used: { type: boolean }
+        saved_experience_id: { type: [integer, 'null'] }
+        warning_count: { type: integer, minimum: 0 }
+    PanelTask:
+      type: object
+      required:
+        - task_id
+        - created_at
+        - image
+        - target
+        - target_profile
+        - positive_prompt
+        - negative_prompt
+        - quality_prefix
+        - positive_terms
+        - negative_terms
+        - low_confidence
+        - dropped
+        - ir
+        - stats
+        - knowledge_base_used
+        - saved_experience_id
+        - warnings
+      additionalProperties: true
+      properties:
+        task_id: { type: string, minLength: 1 }
+        created_at: { type: string, format: date-time }
+        image: { type: [object, 'null'] }
+        target: { type: [object, 'null'] }
+        target_profile: { type: [string, 'null'] }
+        positive_prompt: { type: [string, 'null'] }
+        negative_prompt: { type: [string, 'null'] }
+        quality_prefix: { type: array, items: { type: string } }
+        positive_terms: { type: array, items: { type: object, additionalProperties: true } }
+        negative_terms: { type: array, items: { type: object, additionalProperties: true } }
+        low_confidence: { type: array, items: { type: object, additionalProperties: true } }
+        dropped: { type: array, items: { type: object, additionalProperties: true } }
+        ir: { type: [object, 'null'] }
+        stats: { type: [object, 'null'] }
+        knowledge_base_used: { type: boolean }
+        saved_experience_id: { type: [integer, 'null'] }
+        warnings: { type: array, items: { type: string } }
+    TaskEnvelope:
+      type: object
+      required: [schema_version, task]
+      additionalProperties: false
+      properties:
+        schema_version: { type: string, const: '1.1' }
+        task: { $ref: '#/components/schemas/PanelTask' }
+    PanelError:
+      type: object
+      required: [schema_version, error_code, message]
+      additionalProperties: true
+      properties:
+        schema_version: { type: string, const: '1.1' }
+        error_code:
+          type: string
+          enum:
+            - PANEL_METHOD_NOT_ALLOWED
+            - PANEL_TASK_NOT_FOUND
+            - PANEL_INTERNAL_ERROR
+            - PANEL_ROUTE_UNAVAILABLE
+        error_group: { type: string }
+        message: { type: string }
+        suggested_fix: { type: string }
