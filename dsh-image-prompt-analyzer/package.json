@@ -7,13 +7,11 @@
   "icon": "./icon.svg",
   "exports": {
     ".": "./index.js",
-    "./client": "./client.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "index.js",
-    "client.js",
     "cordis.patch.yml",
     "icon.svg",
     "locale",
@@ -29,13 +27,6 @@
     },
     "bundle": {
       "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "inject": [
-        "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-settings-general"
-      ],
-      "platform": "web"
     }
   },
   "engines": {

@@ -23,9 +23,7 @@ export function apply(ctx, config = {}) {
 
   ctx.effect(() => {
     const disposers = registerAllTools(ctx, runtime)
-    logger.info(
-      `已注册 ${disposers.length} 个工具：analyze_image_prompt / validate_configs / diagnose_knowledge_base / preview_model_profile / manage_experiences`,
-    )
+    logger.info(`已注册 ${disposers.length} 个工具（核心 6 项 + ComfyUI 可选项）`)
 
     let disposed = false
     const preloadTimer = setTimeout(async () => {
@@ -56,24 +54,5 @@ export function apply(ctx, config = {}) {
       })
       logger.info('插件卸载：工具已全部注销')
     }
-  })
-
-  ctx.inject(['webServer'], (scope) => {
-    if (runtime.pluginConfig?.panel?.enabled === false) {
-      logger.info('panel.enabled 是 false，只读结果面板不注册（工具不受影响）。')
-      return
-    }
-    const panel = runtime.panelRoutes.register(scope)
-    for (const item of panel.diagnostics) {
-      logger.warn(`${item.error_code}: ${item.message}`)
-    }
-    scope.effect(() => () => {
-      if (!panel.disposer) return
-      try {
-        panel.disposer()
-      } catch (error) {
-        logger.warn('注销结果面板路由时出错', error)
-      }
-    })
   })
 }

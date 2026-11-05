@@ -96,7 +96,7 @@ function finishFailureToVisionError(reason, { timeoutSignal, callerSignal, targe
 export function createDshRouteBackend({ ctx, visionConfig, readImageBytes, logger }) {
   const unavailableTtl = visionConfig?.fallback?.unavail_ttl_seconds ?? DEFAULT_UNAVAILABLE_TTL_SECONDS
 
-  async function attemptOn({ prompt, system, images = [], signal, maxTokens, temperature, target, onDelta = null }) {
+  async function attemptOn({ prompt, system, images = [], signal, maxTokens, temperature, target }) {
     const timeoutSignal = AbortSignal.timeout(Math.max(1, Math.round((visionConfig?.timeout_seconds ?? 120) * 1000)))
     const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
 
@@ -144,7 +144,6 @@ export function createDshRouteBackend({ ctx, visionConfig, readImageBytes, logge
         callerSignal: signal,
         target,
         logger,
-        onDelta,
       })
 
     const tagTarget = (error) => {
@@ -252,7 +251,7 @@ export function createDshRouteBackend({ ctx, visionConfig, readImageBytes, logge
   }
 }
 
-async function collectStream(makeStream, { timeoutSignal, callerSignal, target, logger, onDelta = null }) {
+async function collectStream(makeStream, { timeoutSignal, callerSignal, target, logger }) {
   let text = ''
   let usage = null
   let finishReason = null
@@ -261,10 +260,8 @@ async function collectStream(makeStream, { timeoutSignal, callerSignal, target, 
     for await (const chunk of makeStream()) {
       if (chunk?.type === 'text-delta') {
         text += chunk.text ?? ''
-        if (onDelta) onDelta('text-delta', chunk.text ?? '')
       } else if (chunk?.type === 'reasoning-delta') {
         reasoningChars += (chunk.text ?? '').length
-        if (onDelta) onDelta('reasoning-delta', chunk.text ?? '')
       } else if (chunk?.type === 'usage') usage = chunk.usage ?? null
       else if (chunk?.type === 'finish') finishReason = chunk.reason ?? null
     }

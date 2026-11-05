@@ -3,9 +3,7 @@ import { PACKAGE_DIR, resolvePluginDirs } from './paths.js'
 import { createLogger } from './log.js'
 import { SEVERITY, diagnostic, fromException } from './diagnostics.js'
 import { createConfigStore, resolvePluginConfig } from './config/index.js'
-import { createPanelStore, createPanelRoutes, PANEL_ROUTE_PREFIX } from './panel.js'
-import { createProgressStore } from './panel/progress.js'
-import { runAnalyzePipeline, runPreviewProfilePipeline, runRevisitPipeline, PLUGIN_VERSION } from './pipeline.js'
+import { runAnalyzePipeline, runPreviewProfilePipeline, PLUGIN_VERSION } from './pipeline.js'
 import { describeVisionBackend, resolveVisionCandidates, VISION_CODES } from './vision/index.js'
 import { lazy } from './runtime/lazy.js'
 import { createKnowledgeRuntime } from './runtime/knowledge.js'
@@ -36,13 +34,6 @@ export function createRuntime({ ctx, config = {}, logger: loggerOverride = null 
     loadedConfigStore = store
     return store
   }
-  const panelStore = createPanelStore({
-    maxRecentTasks: pluginConfig.panel?.max_recent_tasks ?? 20,
-    logger,
-  })
-  const panelRoutes = createPanelRoutes({ store: panelStore, getRuntime: () => runtime, logger })
-
-  const progress = createProgressStore()
   const knowledgeLazy = createKnowledgeRuntime({
     ensureConfigStore,
     configDiagnostics,
@@ -97,11 +88,6 @@ export function createRuntime({ ctx, config = {}, logger: loggerOverride = null 
     getComfyUI: () => comfyuiLazy.get(),
     readImageBytes,
 
-    panelStore,
-    panelRoutes,
-    progress,
-    panelRoutePrefix: PANEL_ROUTE_PREFIX,
-
     peekConfigSnapshot() {
       if (!loadedConfigStore) return null
       const snapshot = loadedConfigStore.snapshot()
@@ -141,10 +127,6 @@ export function createRuntime({ ctx, config = {}, logger: loggerOverride = null 
 
     async runAnalyze(args) {
       return runAnalyzePipeline(runtime, args)
-    },
-
-    async runReanalyze(args) {
-      return runRevisitPipeline(runtime, args)
     },
 
     async runPreviewProfile(args) {

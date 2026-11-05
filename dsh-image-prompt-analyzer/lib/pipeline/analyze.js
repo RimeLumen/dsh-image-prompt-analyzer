@@ -6,7 +6,6 @@ import {
   buildAnalysisEnvelope,
   compileStage,
   prepareInputStage,
-  recordPanelStage,
   runVisionStage,
   saveExperienceStage,
   traceStage,
@@ -90,8 +89,6 @@ export async function runAnalyzePipeline(runtime, args = {}) {
       args,
       diagnostics,
     })
-
-    recordPanelStage({ runtime, taskId, analysis, compiled, profile: profileRequest.profile, knowledge, experience, diagnostics })
 
     // 留痕放在最后：所有阶段产物此时都已就位，写盘失败不影响本次结果。
     const trace = traceStage({ runtime, taskId, analysis, compiled, profileRequest, presetResult, snapshot, knowledge })

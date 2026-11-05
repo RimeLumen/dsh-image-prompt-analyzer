@@ -84,7 +84,7 @@ Analyze this image with the illustrious profile:
   target_profile: "illustrious"
 ```
 
-或者从左侧边栏打开工作台 → 上传图片（或粘贴 URL）→ 选档案 → 分析。
+本插件是纯对话形态：没有侧栏入口，也没有网页工作台，所有能力都以工具形式暴露给模型。
 
 `target_profile` 没有默认值 —— 不传会返回 `MODEL_PROFILE_NOT_SELECTED`。从随包发布的两个档案里选一个。
 
@@ -172,7 +172,7 @@ Animagine XL 4.0 刻意留在标签路径上 —— 它的 Model Card 限定它�
 - **双版本输出** —— 标签版与描述版，由同一批观察编译而来
 - **证据层** —— 观察在进入提示词之前先与像素度量交叉核对；矛盾被报出来，而不是悄悄调和掉
 - **阶段留痕** —— 每次分析都可重放：证据层前/后的 IR、模型原始响应，以及一份说明每条观察最终去了哪里的台账
-- **交互式工作台** —— 侧边栏 UI，支持上传、URL 拉取、选模型/档案、实时思考流
+- **纯对话形态** —— 没有侧栏入口与网页工作台，全部能力通过工具调用完成
 - **本地知识库** —— 纯 SQLite，CSV 导入，零网络
 - **经验库** —— 按档案隔离的历史、评分、导出/导入
 - **视觉模型自动发现** —— 从宿主目录里找支持图像的模型，失败时自动回退
@@ -233,7 +233,6 @@ node scripts/inspect-prompt.mjs channels --ir ir.json
 ```
 ├── dsh-image-prompt-analyzer/       # 插件包
 │   ├── index.js                     # Host 入口（注册工具 + 预热）
-│   ├── client.js                    # 浏览器端工作台 UI
 │   ├── configs/
 │   │   ├── model-profiles/          # 2 个模型档案
 │   │   ├── presets/                 # 3 档细节密度（minimal / standard / high）
@@ -251,15 +250,11 @@ node scripts/inspect-prompt.mjs channels --ir ir.json
 │   │   ├── config/                  # 配置加载 + 校验
 │   │   ├── model-profile/           # 档案 schema + 默认值
 │   │   ├── runtime/                 # 惰性单例（知识库、配置存储）
-│   │   ├── comfyui/                 # ComfyUI 接入（扫描、客户端、工作流、补丁、任务）
-│   │   └── panel/                   # HTTP 路由 + 工作台
+│   │   └── comfyui/                 # ComfyUI 接入（扫描、客户端、工作流、补丁、任务）
 │   ├── locale/                      # zh / en
 │   ├── python/                      # 图片解码辅助（Pillow）
 │   ├── res/                         # 标签 CSV（知识库数据源）
 │   └── scripts/                     # 命令行辅助（标签导入、经验导出、编译检查）
-├── docs/
-│   ├── PANEL_API.md                 # HTTP API 说明
-│   └── panel-api.openapi.yaml       # OpenAPI 定义
 └── README.md
 ```
 

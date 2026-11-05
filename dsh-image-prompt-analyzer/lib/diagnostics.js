@@ -11,7 +11,7 @@ export const ERROR_GROUPS = Object.freeze({
 const GROUP_RULES = Object.freeze([
   ['C', ['CONFIG_', 'PLUGIN_CONFIG_', 'MODEL_PROFILE_', 'TAG_STANDARD_', 'VALIDATE_CONFIGS_']],
   ['K', ['KB_', 'DIAGNOSE_', 'EXPERIENCE_']],
-  ['W', ['VISION_', 'PIPELINE_', 'PANEL_', 'PYTHON_']],
+  ['W', ['VISION_', 'PIPELINE_', 'PYTHON_']],
   ['V', ['IMAGE_', 'INPUT_']],
 ])
 

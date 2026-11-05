@@ -74,10 +74,6 @@ export async function runVisionStage({
     if (typeof args?.vision_model === 'string' && args.vision_model.trim()) {
       visionConfig.model = args.vision_model
     }
-    const onDelta =
-      typeof args?.progress_key === 'string' && args.progress_key.trim() && runtime.progress
-        ? (kind, text) => runtime.progress.push(args.progress_key, text)
-        : null
     const analysis = await analyzeVision({
       backend,
       preparer,
@@ -87,7 +83,6 @@ export async function runVisionStage({
       locale: 'zh',
       signal: args.signal ?? null,
       logger,
-      onDelta,
     })
     diagnostics.push(...analysis.diagnostics)
     return analysis
@@ -275,14 +270,6 @@ export async function compileStage({ runtime, ir, irBeforeEvidence = null, profi
   return compiled
 }
 
-function profileSummary(profile) {
-  return {
-    config_id: profile?.config_id ?? null,
-    display_name: profile?.display_name ?? profile?.config_id ?? null,
-    schema_version: profile?.schema_version ?? null,
-  }
-}
-
 export async function saveExperienceStage({
   runtime,
   taskId,
@@ -336,37 +323,6 @@ export async function saveExperienceStage({
       }),
     )
     return null
-  }
-}
-
-export function recordPanelStage({ runtime, taskId, analysis, compiled, profile, knowledge, experience, diagnostics }) {
-  if (!runtime.panelStore) return
-  try {
-    runtime.panelStore.record({
-      taskId,
-      image: analysis.ir.image,
-      target: profileSummary(profile),
-      positive: compiled.prompts.positive,
-      negative: compiled.prompts.negative,
-      // 描述版与标签版并列落盘：标签版给模型查表，描述版给人读、给 img2img 参考
-      description: compiled.prompts.description ?? null,
-      composed: compiled.composed?.text ?? null,
-      qualityPrefix: compiled.quality_block,
-      positiveTerms: compiled.slots.flatMap((segment) => segment.terms),
-      negativeTerms: compiled.prompts.negative ? compiled.prompts.negative.split(',').map((item) => item.trim()) : [],
-      lowConfidence: [],
-      dropped: compiled.dropped,
-      // 面板也存一份台账：用户在界面上问"这条观察去哪了"时，答案在这里，
-      // 不在最终文本里做词重合。
-      factLedger: compiled.fact_ledger ?? null,
-      ir: analysis.ir,
-      stats: { ...analysis.stats, compile: compiled.stats },
-      knowledgeBaseUsed: knowledge.kb !== null,
-      savedExperienceId: experience?.id ?? null,
-      warnings: diagnostics.filter((item) => item.severity === SEVERITY.WARNING).map((item) => item.error_code),
-    })
-  } catch (error) {
-    runtime.logger?.warn?.(`写入结果面板失败：${error?.message ?? error}`)
   }
 }
 

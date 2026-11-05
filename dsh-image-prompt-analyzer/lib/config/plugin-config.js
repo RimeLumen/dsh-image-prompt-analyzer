@@ -66,12 +66,6 @@ export const DEFAULT_PLUGIN_CONFIG = Object.freeze({
     log_image_paths: false,
   }),
 
-  panel: Object.freeze({
-    enabled: true,
-    max_recent_tasks: 20,
-    workbench_temp_ttl_minutes: 10,
-  }),
-
   // 阶段留痕：把一次分析的各阶段产物写到 data/traces/<task_id>/ 下。
   // 默认开着，因为它不花钱、不影响提示词，却决定了"这次到底哪一步改了什么"能不能回答。
   // 只保留最近若干次，避免无限占盘。
@@ -177,8 +171,6 @@ export function resolvePluginConfig(raw, configFile = 'cordis.patch.yml (plugin 
     ['/vision/review_confidence_threshold', merged.vision.review_confidence_threshold, 0, 1],
     ['/vision/important_threshold', merged.vision.important_threshold, 0, 1],
     ['/python/timeout_seconds', merged.python.timeout_seconds, 1, 600],
-    ['/panel/max_recent_tasks', merged.panel.max_recent_tasks, 1, 500],
-    ['/panel/workbench_temp_ttl_minutes', merged.panel.workbench_temp_ttl_minutes, 1, 10080],
     ['/trace/max_tasks', merged.trace?.max_tasks ?? 10, 1, 200],
     ['/comfyui/requestTimeoutMs', merged.comfyui?.requestTimeoutMs ?? DEFAULT_COMFY_TIMEOUT_MS, 1000, 600000],
   ]
@@ -288,15 +280,6 @@ export const PLUGIN_CONFIG_SCHEMA = Object.freeze({
       properties: {
         save_experience_default: { type: 'boolean' },
         log_image_paths: { type: 'boolean' },
-      },
-    },
-    panel: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        enabled: { type: 'boolean' },
-        max_recent_tasks: { type: 'integer', minimum: 1, maximum: 500 },
-        workbench_temp_ttl_minutes: { type: 'integer', minimum: 1, maximum: 10080 },
       },
     },
     trace: {

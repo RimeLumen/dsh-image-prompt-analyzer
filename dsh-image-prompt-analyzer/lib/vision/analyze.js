@@ -267,7 +267,6 @@ export async function analyzeVision({
   locale = 'zh',
   signal,
   logger,
-  onDelta = null,
 } = {}) {
   const diagnostics = []
   const taskId = provenance.task_id ?? shortId('task')
@@ -329,7 +328,6 @@ export async function analyzeVision({
         maxTokens: attemptBudget ?? undefined,
         temperature,
         ...(Object.keys(visionOverride).length > 0 ? { visionOverride } : {}),
-        ...(onDelta ? { onDelta } : {}),
       })
     } catch (error) {
       if (attempt === 1) throw error
@@ -541,8 +539,7 @@ export async function analyzeVision({
           maxTokens,
           temperature,
           ...(Object.keys(visionOverride).length > 0 ? { visionOverride } : {}),
-          ...(onDelta ? { onDelta } : {}),
-        }),
+          }),
       ),
     )
 
@@ -669,7 +666,6 @@ export async function analyzeVision({
         maxTokens,
         temperature,
         ...(Object.keys(visionOverride).length > 0 ? { visionOverride } : {}),
-        ...(onDelta ? { onDelta } : {}),
       })
       const parsedRescue = parseModelJson(rescued.text, { expected: 'object' })
       // 整维补漏也是一次真实的阶段 B 响应，而且它确实改了 IR。
