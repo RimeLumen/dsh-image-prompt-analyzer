@@ -42,8 +42,12 @@
     "node": ">=22.5.0"
   },
   "scripts": {
+    "test": "node scripts/core-baseline.test.mjs",
     "import-tags": "node scripts/import-tags.mjs",
     "export-experiences": "node scripts/export-experiences.mjs",
     "inspect-prompt": "node scripts/inspect-prompt.mjs"
+  },
+  "dependencies": {
+    "yaml": "2.9.1"
   }
 }

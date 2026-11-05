@@ -1,0 +1,8 @@
+# 多文档：ComfyUI 的加载器只读第一个文档，我们直接拒绝，避免静默丢配置。
+first:
+  base_path: D:/A
+  checkpoints: models/checkpoints
+---
+second:
+  base_path: D:/B
+  checkpoints: models/checkpoints

@@ -2,7 +2,7 @@
 
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A522.5-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![Python](https://img.shields.io/badge/Python-3%20%2B%20Pillow-3776ab?logo=python&logoColor=white)](https://python.org)
-[![npm dependencies](https://img.shields.io/badge/npm%20dependencies-0-00add8?logo=npm)](https://www.npmjs.com)
+[![npm dependencies](https://img.shields.io/badge/npm%20dependencies-1-00add8?logo=npm)](https://www.npmjs.com)
 [![License](https://img.shields.io/badge/license-Apache_2.0-blue)](LICENSE)
 
 一个 [[DSH]](https://github.com/deepseek-ai/deepseek-harness) 插件：把本地图片转换成适用于 ComfyUI 的、面向特定模型的提示词。
@@ -251,6 +251,7 @@ node scripts/inspect-prompt.mjs channels --ir ir.json
 │   │   ├── config/                  # 配置加载 + 校验
 │   │   ├── model-profile/           # 档案 schema + 默认值
 │   │   ├── runtime/                 # 惰性单例（知识库、配置存储）
+│   │   ├── comfyui/                 # ComfyUI 接入（扫描、客户端、工作流、补丁、任务）
 │   │   └── panel/                   # HTTP 路由 + 工作台
 │   ├── locale/                      # zh / en
 │   ├── python/                      # 图片解码辅助（Pillow）
@@ -262,17 +263,58 @@ node scripts/inspect-prompt.mjs channels --ir ir.json
 └── README.md
 ```
 
+## ComfyUI 接入（可选，默认关闭）
+
+`comfyui` 段默认关闭。不写这一段时，插件行为与 1.0 完全一致：不读模型目录、不连任何端口、不注册额外工具。
+
+```yaml
+comfyui:
+  enabled: false                        # 默认 false
+  baseUrl: http://127.0.0.1:8188        # 只接受本机回环地址，且不能内嵌用户名/密码
+  installRoot: D:\ComfyUI               # 绝对路径；指向插件包之外，插件不会替你创建
+  extraModelPathsConfigFiles: []        # 额外的 extra_model_paths.yaml，绝对路径
+  additionalModelRoots: []              # 额外的模型根目录，绝对路径
+  requestTimeoutMs: 30000               # 1000–600000
+```
+
+几点约束是硬性的，不是建议：
+
+- `baseUrl` 的主机必须是 `127.0.0.1`、`::1` 或 `localhost`。填了远程地址会得到 `COMFY_TARGET_NOT_LOCAL`，**并且整段 `comfyui` 会被关掉**——不会退回默认地址偷偷连本机。
+- 所有路径必须是绝对路径。相对路径无法判断相对谁，插件不会去猜，会报 `COMFY_PATH_UNRESOLVED`。
+- 未知字段会被拒并清掉（`COMFY_VALIDATION_FAILED`），因为这一段的 schema 是 `additionalProperties: false`。
+- 不在这一段放任何密钥。本版本只连本机，不需要鉴权。
+
+启用后提供六个工具，默认关闭时一个都不注册：
+
+| 工具 | 做什么 |
+|---|---|
+| `comfyui_status` | 查连接状态与版本；未启用时也回答"为什么没启用" |
+| `comfyui_list_models` | 扫本地模型目录，按分类/名称/四态过滤 |
+| `comfyui_inspect_workflow` | 读工作流，区分 UI / API 格式，查节点与连接 |
+| `comfyui_plan_workflow_patch` | 对 API 工作流生成补丁计划，只改已存在的字段 |
+| `comfyui_submit_workflow` | 提交已通过校验的 API Prompt |
+| `comfyui_get_job` | 查任务状态、取输出图 |
+
+几条同样硬性的边界：
+
+- 只读文件元数据，不读权重内容；只扫配置里给出的根，不扫整盘。
+- 模型状态分四种、互不推导：磁盘存在、运行时可见、Loader 可选、执行成功。运行时没起时，可见性是 `unknown` 而不是 `false`。
+- 不覆盖原始工作流文件；UI Workflow 只做识别与结构检查，不转成 API Prompt。
+- 提交一旦超时或断连就记为 `unknown`，**不会自动重发**——网络错误不等于服务端没收到。
+- 取图只走 `/view` 的合法参数，再把字节交给 Host 的 attachments 服务；不去读 ComfyUI 报出来的本地路径。
+- 环境里配了代理、而 `no_proxy` 没排除本机地址时，直接拒绝建客户端（`COMFY_CAPABILITY_UNAVAILABLE`），避免本机请求被代理转出去。
+
 ## 技术
 
 | | |
 |---|---|
-| npm 运行时依赖 | **0** —— 无需 `npm install`，纯 ESM |
+| npm 运行时依赖 | **1** —— `yaml@2.9.1`（纯 JS，ISC）；其余全部内置，纯 ESM |
 | Node.js | **≥ 22.5**（内置 `node:sqlite`） |
 | Python | **3 且装有 Pillow** —— 所有图片解码都依赖它 |
 | Python 可选 | `numpy`（几何度量）、`rawpy`（RAW 格式） |
 | 构建步骤 | 无 |
 | 类型标注 | JSDoc |
-| 网络 | 只有用户主动提供的图片 URL 下载；图片永远不会上传给第三方 |
+| 网络 | 用户主动提供的图片 URL 下载；启用 ComfyUI 后只连本机 loopback；图片永远不会上传给第三方 |
 | 数据 | `data/` 下的本地 SQLite，不入库 |
 
 ## 故障排查

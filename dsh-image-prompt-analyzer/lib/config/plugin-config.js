@@ -1,6 +1,7 @@
 
 import { diagnostic, SEVERITY } from '../diagnostics.js'
 import { MIGRATE_CODES } from './migrate.js'
+import { DEFAULT_COMFY_BASE_URL, DEFAULT_COMFY_TIMEOUT_MS, normalizeComfySettings } from '../comfyui/index.js'
 
 const PLUGIN_CONFIG_CODES = Object.freeze({
   SECRET_IN_CONFIG: 'PLUGIN_CONFIG_SECRET_IN_CONFIG',
@@ -78,6 +79,17 @@ export const DEFAULT_PLUGIN_CONFIG = Object.freeze({
     enabled: true,
     max_tasks: 10,
   }),
+
+  // ComfyUI 接入默认关闭：不配置时插件行为与 1.0 完全一致，
+  // 也不会去碰用户的模型目录。installRoot 只接受绝对路径——它指向插件包之外。
+  comfyui: Object.freeze({
+    enabled: false,
+    baseUrl: DEFAULT_COMFY_BASE_URL,
+    installRoot: null,
+    extraModelPathsConfigFiles: Object.freeze([]),
+    additionalModelRoots: Object.freeze([]),
+    requestTimeoutMs: DEFAULT_COMFY_TIMEOUT_MS,
+  }),
 })
 
 function deepMerge(base, override) {
@@ -148,6 +160,12 @@ export function resolvePluginConfig(raw, configFile = 'cordis.patch.yml (plugin 
   delete merged.network
   delete merged.cache
 
+  // comfyui 段单独规范化：未知键要清掉（schema 是 additionalProperties:false），
+  // 路径与 URL 的写法校验也在这里做，避免 deepMerge 把非法值原样留在配置里。
+  const comfy = normalizeComfySettings(input.comfyui, { configFile })
+  diagnostics.push(...comfy.diagnostics)
+  merged.comfyui = comfy.settings
+
   const numericGuards = [
     ['/image/max_edge', merged.image.max_edge, 64, 65536],
     ['/image/max_pixels', merged.image.max_pixels, 4096, 268435456],
@@ -162,6 +180,7 @@ export function resolvePluginConfig(raw, configFile = 'cordis.patch.yml (plugin 
     ['/panel/max_recent_tasks', merged.panel.max_recent_tasks, 1, 500],
     ['/panel/workbench_temp_ttl_minutes', merged.panel.workbench_temp_ttl_minutes, 1, 10080],
     ['/trace/max_tasks', merged.trace?.max_tasks ?? 10, 1, 200],
+    ['/comfyui/requestTimeoutMs', merged.comfyui?.requestTimeoutMs ?? DEFAULT_COMFY_TIMEOUT_MS, 1000, 600000],
   ]
   for (const [field_path, value, min, max] of numericGuards) {
     if (!isNumberInRange(value, min, max)) {
@@ -286,6 +305,18 @@ export const PLUGIN_CONFIG_SCHEMA = Object.freeze({
       properties: {
         enabled: { type: 'boolean' },
         max_tasks: { type: 'integer', minimum: 1, maximum: 200 },
+      },
+    },
+    comfyui: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        enabled: { type: 'boolean' },
+        baseUrl: { type: 'string', minLength: 1 },
+        installRoot: { type: ['string', 'null'], minLength: 1 },
+        extraModelPathsConfigFiles: { type: 'array', items: { type: 'string', minLength: 1 } },
+        additionalModelRoots: { type: 'array', items: { type: 'string', minLength: 1 } },
+        requestTimeoutMs: { type: 'integer', minimum: 1000, maximum: 600000 },
       },
     },
   },

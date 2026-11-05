@@ -1,5 +1,6 @@
 
 import { registerTool } from './registry.js'
+import { registerComfyTools } from '../comfyui/tools.js'
 import { fromException, envelope, TASK_STATUS } from '../diagnostics.js'
 import { runValidateConfigs } from './impl/validate-configs.js'
 import { runDiagnoseKnowledgeBase } from './impl/diagnose-kb.js'
@@ -227,6 +228,21 @@ export function registerAllTools(ctx, runtime) {
       }
       throw error
     }
+  }
+
+  // ComfyUI 工具是可选能力：注册本身不读文件、不发请求，未启用时每个工具
+  // 都会返回 CAPABILITY_UNAVAILABLE。注册失败要连带回滚前面已注册的六项。
+  try {
+    disposers.push(...registerComfyTools(ctx, runtime))
+  } catch (error) {
+    for (const dispose of disposers.reverse()) {
+      try {
+        dispose()
+      } catch (disposeError) {
+        runtime.logger.warn('回退已注册工具时出错', disposeError)
+      }
+    }
+    throw error
   }
   return disposers
 }

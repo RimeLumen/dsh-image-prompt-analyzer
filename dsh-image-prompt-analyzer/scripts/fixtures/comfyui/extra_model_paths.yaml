@@ -1,0 +1,19 @@
+# 模拟 ComfyUI 的 extra_model_paths.yaml：多配置块、多行分类、相对与绝对路径混用。
+comfyui:
+  base_path: D:/ComfyUI
+  is_default: true
+  checkpoints: |
+    models/checkpoints
+    D:/Extra/checkpoints
+  loras: models/loras
+  vae: models/vae
+  clip: models/clip
+  unet: models/unet
+  controlnet: models/controlnet
+  my_custom_category: models/my_custom_category
+
+extra:
+  base_path: D:/ComfyUI/models
+  is_default: false
+  checkpoints: D:/Extra2/ckpt
+  text_encoders: te

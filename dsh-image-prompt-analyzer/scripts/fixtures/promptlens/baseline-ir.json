@@ -1,0 +1,177 @@
+{
+  "schema_version": "1.0",
+  "task_id": "baseline-task",
+  "created_at": "2026-01-01T00:00:00.000Z",
+  "image": {
+    "width": 832,
+    "height": 1216,
+    "aspect_ratio": "0.684",
+    "has_alpha": false,
+    "src_format": "PNG",
+    "decoded_via": "pillow",
+    "source_width": 832,
+    "source_height": 1216,
+    "scale": 1,
+    "orientation_applied": 1,
+    "transparent_ratio": null
+  },
+  "scene": { "summary": null },
+  "composition": {},
+  "camera": {},
+  "entities": [
+    {
+      "entity_id": "ent_1",
+      "kind": "person",
+      "label": "girl",
+      "count": 1,
+      "confidence": 0.9,
+      "importance": 0.5,
+      "region": [0.2, 0.1, 0.8, 0.95],
+      "features": [
+        {
+          "category": "appearance",
+          "key": "hair_color",
+          "value": "silver hair",
+          "confidence": 0.9,
+          "importance": 0.2667,
+          "source": "global_analysis",
+          "status": "confirmed"
+        },
+        {
+          "category": "appearance",
+          "key": "eye_color",
+          "value": "red eyes",
+          "confidence": 0.85,
+          "importance": 0.2667,
+          "source": "global_analysis",
+          "status": "confirmed"
+        },
+        {
+          "category": "clothing",
+          "key": "upper_body",
+          "value": "white blouse",
+          "confidence": 0.88,
+          "importance": 0.2667,
+          "source": "global_analysis",
+          "status": "confirmed"
+        },
+        {
+          "category": "expression",
+          "key": "mouth",
+          "value": "slight smile",
+          "confidence": 0.8,
+          "importance": 0.1,
+          "source": "global_analysis",
+          "status": "confirmed"
+        }
+      ]
+    },
+    {
+      "entity_id": "ent_2",
+      "kind": "prop",
+      "label": "umbrella",
+      "count": 1,
+      "confidence": 0.7,
+      "importance": 0.2,
+      "region": [0.55, 0.2, 0.95, 0.6],
+      "features": []
+    }
+  ],
+  "relations": [
+    {
+      "relation_id": "rel_1",
+      "type": "holding",
+      "from": "ent_1",
+      "to": "ent_2",
+      "description": "right hand holds the umbrella handle",
+      "confidence": 0.8,
+      "importance": 0.3,
+      "source": "global_analysis",
+      "status": "confirmed"
+    }
+  ],
+  "features": [
+    {
+      "category": "subject",
+      "key": "count",
+      "value": "1girl",
+      "confidence": 0.95,
+      "importance": 0.5,
+      "source": "global_analysis",
+      "status": "confirmed"
+    },
+    {
+      "category": "composition",
+      "key": "framing",
+      "value": "cowboy shot",
+      "confidence": 0.8,
+      "importance": 1,
+      "source": "global_analysis",
+      "status": "confirmed"
+    },
+    {
+      "category": "camera",
+      "key": "angle",
+      "value": "from below",
+      "confidence": 0.75,
+      "importance": 0.8333,
+      "source": "global_analysis",
+      "status": "confirmed"
+    },
+    {
+      "category": "background",
+      "key": "backdrop",
+      "value": "rainy street",
+      "confidence": 0.7,
+      "importance": 0.1667,
+      "source": "global_analysis",
+      "status": "confirmed"
+    },
+    {
+      "category": "lighting_color",
+      "key": "light_source",
+      "value": "overcast daylight",
+      "confidence": 0.65,
+      "importance": 0.1333,
+      "source": "global_analysis",
+      "status": "confirmed"
+    },
+    {
+      "category": "pose_action",
+      "key": "stance",
+      "value": "standing with weight on one leg",
+      "confidence": 0.6,
+      "importance": 0.3333,
+      "source": "global_analysis",
+      "status": "tentative"
+    },
+    {
+      "category": "pose_action",
+      "key": "hand",
+      "value": "left arm raised toward the viewer palm open",
+      "confidence": 0.7,
+      "importance": 0.3333,
+      "source": "global_analysis",
+      "status": "confirmed"
+    },
+    {
+      "category": "background",
+      "key": "absence",
+      "value": "no visible crowd",
+      "confidence": 0.6,
+      "importance": 0.1667,
+      "source": "global_analysis",
+      "status": "confirmed"
+    }
+  ],
+  "uncertainties": [
+    {
+      "uncertainty_id": "unc_1",
+      "code": "color_indeterminable",
+      "subject": "umbrella canopy",
+      "question": "is the canopy black or navy",
+      "severity": "low"
+    }
+  ],
+  "provenance": { "analyzer": "baseline-fixture" }
+}

@@ -12,6 +12,7 @@ import { createKnowledgeRuntime } from './runtime/knowledge.js'
 import { createInputRuntime } from './runtime/input.js'
 import { createVisionRuntime } from './runtime/vision.js'
 import { createExperienceRuntime } from './runtime/experience.js'
+import { createComfyRuntime } from './comfyui/index.js'
 
 export function createRuntime({ ctx, config = {}, logger: loggerOverride = null } = {}) {
   const dirs = resolvePluginDirs(config)
@@ -71,6 +72,13 @@ export function createRuntime({ ctx, config = {}, logger: loggerOverride = null 
   })
 
   const { saveExperience } = createExperienceRuntime({ knowledgeLazy, readImageBytes, pluginConfig, logger })
+
+  // ComfyUI 只在第一次被取用时才建：默认配置下 enabled 是 false，
+  // 但即便打开，这一步也不读盘、不连网，只是把配置装进一个运行时对象。
+  const comfyuiLazy = lazy(() =>
+    Promise.resolve(createComfyRuntime({ ctx, pluginConfig, logger })),
+  )
+
   const runtime = {
     ctx,
     dirs,
@@ -86,6 +94,7 @@ export function createRuntime({ ctx, config = {}, logger: loggerOverride = null 
     getTemp: () => tempLazy.get(),
     getPreparer: () => preparerLazy.get(),
     getVisionBackend: () => visionLazy.get(),
+    getComfyUI: () => comfyuiLazy.get(),
     readImageBytes,
 
     panelStore,
@@ -164,6 +173,19 @@ export function createRuntime({ ctx, config = {}, logger: loggerOverride = null 
     },
 
     async dispose() {
+      // ComfyUI 必须先释放：下面的知识库分支在"从未初始化"时会提前 return，
+      // 放在它后面就等于漏掉 ComfyUI 的清理。
+      const comfyPending = comfyuiLazy.peek()
+      comfyuiLazy.reset()
+      if (comfyPending) {
+        try {
+          const comfy = await comfyPending
+          comfy.dispose()
+        } catch (error) {
+          logger.warn(`释放 ComfyUI 运行时时出错：${error?.message ?? error}`)
+        }
+      }
+
       const pending = knowledgeLazy.peek()
       knowledgeLazy.reset()
       if (!pending) return

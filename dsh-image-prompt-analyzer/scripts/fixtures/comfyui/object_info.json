@@ -1,0 +1,48 @@
+{
+  "CheckpointLoaderSimple": {
+    "input": { "required": { "ckpt_name": [["sd15.safetensors", "sd15-inpaint.safetensors"]] } },
+    "output": ["MODEL", "CLIP", "VAE"]
+  },
+  "LoraLoader": {
+    "input": {
+      "required": {
+        "model": ["MODEL"],
+        "clip": ["CLIP"],
+        "lora_name": [["detail.safetensors"]],
+        "strength_model": ["FLOAT", { "default": 1, "min": -100, "max": 100 }],
+        "strength_clip": ["FLOAT", { "default": 1, "min": -100, "max": 100 }]
+      }
+    }
+  },
+  "VAELoader": {
+    "input": { "required": { "vae_name": [["vae-ft-mse.safetensors", "pixel_space", "taesd"]] } }
+  },
+  "CLIPTextEncode": {
+    "input": { "required": { "text": ["STRING", { "multiline": true }], "clip": ["CLIP"] } }
+  },
+  "KSampler": {
+    "input": {
+      "required": {
+        "model": ["MODEL"],
+        "seed": ["INT", { "default": 0, "min": 0, "max": 18446744073709551615 }],
+        "steps": ["INT", { "default": 20, "min": 1, "max": 10000 }],
+        "cfg": ["FLOAT", { "default": 8, "min": 0, "max": 100 }],
+        "sampler_name": [["euler", "euler_ancestral", "dpmpp_2m"]],
+        "scheduler": [["normal", "karras", "exponential"]],
+        "denoise": ["FLOAT", { "default": 1, "min": 0, "max": 1 }],
+        "positive": ["CONDITIONING"],
+        "negative": ["CONDITIONING"],
+        "latent_image": ["LATENT"]
+      }
+    }
+  },
+  "EmptyLatentImage": {
+    "input": {
+      "required": {
+        "width": ["INT", { "default": 512, "min": 16, "max": 16384 }],
+        "height": ["INT", { "default": 512, "min": 16, "max": 16384 }],
+        "batch_size": ["INT", { "default": 1, "min": 1, "max": 4096 }]
+      }
+    }
+  }
+}
