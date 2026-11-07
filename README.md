@@ -17,7 +17,7 @@
 
 | | 要求 | 原因 |
 |---|---|---|
-| **Node.js** | **≥ 22.5** | 本地知识库用的是内置的 `node:sqlite`。没有任何 npm 依赖需要安装，完全不需要 `npm install` 这一步。 |
+| **Node.js** | **≥ 22.5** | 本地知识库用的是内置的 `node:sqlite`。唯一的 npm 依赖是纯 JS 的 `yaml`（解析 `extra_model_paths.yaml`），随插件一起装好，不需要你单独跑 `npm install`。 |
 | **Python** | **3 且装有 [Pillow](https://python-pillow.org/)**（实测于 3.10.6 + Pillow 12.1.1） | 图片解码。每一张 PNG / JPEG / WEBP / BMP 都要经过 `python/decode_helper.py`，而它依赖 Pillow。**没有 Pillow，每一张图都会以 `DECODE_FAILED` 失败**，插件等于不可用。 |
 | **numpy** *（可选）* | 任意较新版本 | 额外的几何度量（主体区域亮度、对比度剖面）。缺 numpy 时这些度量退化为 `null`，分析照常跑。 |
 | **rawpy** *（可选）* | 任意较新版本 | 相机 RAW 格式（`.cr2`、`.nef`、`.dng` 等）。默认关闭（`image.raw_enabled: false`）。 |
@@ -238,6 +238,7 @@ node scripts/inspect-prompt.mjs channels --ir ir.json
 │   │   ├── presets/                 # 3 档细节密度（minimal / standard / high）
 │   │   └── knowledge-base.*.json    # 知识库数据源 + 存储 schema
 │   ├── lib/
+│   │   ├── client.js                # 浏览器半侧（对话里的任务卡片，单文件 bundle）
 │   │   ├── vision/                  # 视觉管线（两阶段分析 + 证据层）
 │   │   ├── compile/                 # 提示词编译器（标签版 + 描述版）
 │   │   ├── ir/                      # 观察 IR（schema、构建、合并）
@@ -250,7 +251,7 @@ node scripts/inspect-prompt.mjs channels --ir ir.json
 │   │   ├── config/                  # 配置加载 + 校验
 │   │   ├── model-profile/           # 档案 schema + 默认值
 │   │   ├── runtime/                 # 惰性单例（知识库、配置存储）
-│   │   └── comfyui/                 # ComfyUI 接入（扫描、客户端、工作流、补丁、任务）
+│   │   └── comfyui/                 # ComfyUI 接入（自动发现、扫描、客户端、工作流、补丁、任务）
 │   ├── locale/                      # zh / en
 │   ├── python/                      # 图片解码辅助（Pillow）
 │   ├── res/                         # 标签 CSV（知识库数据源）
@@ -258,28 +259,48 @@ node scripts/inspect-prompt.mjs channels --ir ir.json
 └── README.md
 ```
 
-## ComfyUI 接入（可选，默认关闭）
+## ComfyUI 接入（默认开启，自动发现）
 
-`comfyui` 段默认关闭。不写这一段时，插件行为与 1.0 完全一致：不读模型目录、不连任何端口、不注册额外工具。
+装好就能用：不写 `comfyui` 段也会自动找本机的 ComfyUI，**不需要预先填 `installRoot`、YAML 或模型目录**。
 
 ```yaml
 comfyui:
-  enabled: false                        # 默认 false
+  enabled: true                         # 默认 true；写 false 就彻底停用
+  autoDetect: true                      # 默认 true；写 false 就只用下面手填的路径
   baseUrl: http://127.0.0.1:8188        # 只接受本机回环地址，且不能内嵌用户名/密码
-  installRoot: D:\ComfyUI               # 绝对路径；指向插件包之外，插件不会替你创建
+  installRoot: null                     # 留空就走自动发现；填了就以你填的为准
   extraModelPathsConfigFiles: []        # 额外的 extra_model_paths.yaml，绝对路径
   additionalModelRoots: []              # 额外的模型根目录，绝对路径
   requestTimeoutMs: 30000               # 1000–600000
 ```
 
+自动发现按固定顺序尝试，每一步都只查已知位置和这些位置往下几层，**不遍历盘根、不扫用户目录、不扫端口段**：
+
+1. 你手填的 `installRoot`——最优先，自动发现不会覆盖它。
+2. 正在运行的 ComfyUI 进程——读它的命令行，取出 `main.py` 所在目录、`--port`、`--listen`、`--models-directory`、`--base-directory`、`--extra-model-paths-config`。只做只读的系统进程查询，不执行 ComfyUI 的 Python，也不启动或停止它。谁把它拉起来的都算：Portable 的 `run_nvidia_gpu.bat`、自己 `git clone` 后敲的 `python main.py`、第三方整合启动器，走的都是这一条。
+3. Portable / Git 安装的固定候选位置，用 `main.py` + `folder_paths.py` 两个文件确认是不是真的安装根。
+4. 从上面这些候选位置有界下探一层：整合启动器会把 ComfyUI 埋在 `<盘>:\ComfyUI\<启动器>\<启动器>\ComfyUI` 这种地方，固定候选到 `<盘>:\ComfyUI` 就断了。下探只进名字里带 `comfy` 的目录，跳过 `models`、`input`、`output`、`custom_nodes` 这类不会有第二个安装根的目录；深度最多 4 层、每层最多看 200 条、一次最多 240 个目录，并且按盘均分预算，不会让第一块盘把额度吃光。
+5. 每个候选自己的 `extra_model_paths.yaml`，以及你显式列出的额外 YAML。
+6. 你手填的 `additionalModelRoots`。
+7. 最后才用默认 loopback 地址探一下有没有服务在跑——**能连上不代表安装根和模型根是对的**，所以只连上、路径没确认的候选会标 `partial` 而不是 `found`。
+
+发现是惰性的：插件加载时只读配置，不碰磁盘；第一次调用 `comfyui_status` 或 `comfyui_list_models` 才真正开始找，结果缓存在进程内存里。
+
+安装目录与模型目录是两个独立的东西。模型根可以完全不在安装目录下（YAML 里指向别的盘、`--models-directory` 指到别处，都照办）。发现到多个实例时返回候选列表并标 `ambiguous`，**不会替你挑一个**。
+
 几点约束是硬性的，不是建议：
 
+- `enabled: false` 时不发现、不扫描、不连接、**七个工具一个都不注册**。
 - `baseUrl` 的主机必须是 `127.0.0.1`、`::1` 或 `localhost`。填了远程地址会得到 `COMFY_TARGET_NOT_LOCAL`，**并且整段 `comfyui` 会被关掉**——不会退回默认地址偷偷连本机。
-- 所有路径必须是绝对路径。相对路径无法判断相对谁，插件不会去猜，会报 `COMFY_PATH_UNRESOLVED`。
+- 所有手填路径必须是绝对路径。相对路径无法判断相对谁，插件不会去猜，会报 `COMFY_PATH_UNRESOLVED`。
 - 未知字段会被拒并清掉（`COMFY_VALIDATION_FAILED`），因为这一段的 schema 是 `additionalProperties: false`。
 - 不在这一段放任何密钥。本版本只连本机，不需要鉴权。
 
-启用后提供六个工具，默认关闭时一个都不注册：
+**支持**：Windows Portable、`git clone` 后的常规布局、以及第三方整合启动器拉起的 ComfyUI（靠进程命令行认出真实安装位置，不需要知道启动器是谁）。
+
+**不支持**官方 ComfyUI Desktop 的私有配置——`extra_models_config.yaml`、`settings.json`、`installations.json` 之类不做适配，也不参与发现。Desktop 拉起的进程如果确实在跑 ComfyUI 的 `main.py`，通用进程发现照样能认出它的安装根，但会标注这是 Desktop 应用包、不算受支持的安装方式；长期使用请把 `comfyui.installRoot` 指向你自己装的 ComfyUI。
+
+启用后提供七个工具：
 
 | 工具 | 做什么 |
 |---|---|
@@ -289,6 +310,7 @@ comfyui:
 | `comfyui_plan_workflow_patch` | 对 API 工作流生成补丁计划，只改已存在的字段 |
 | `comfyui_submit_workflow` | 提交已通过校验的 API Prompt |
 | `comfyui_get_job` | 查任务状态、取输出图 |
+| `comfyui_start` | 打开启动器 / 启动后端 / 打开安装目录 / 打开 Web UI |
 
 几条同样硬性的边界：
 
@@ -298,6 +320,70 @@ comfyui:
 - 提交一旦超时或断连就记为 `unknown`，**不会自动重发**——网络错误不等于服务端没收到。
 - 取图只走 `/view` 的合法参数，再把字节交给 Host 的 attachments 服务；不去读 ComfyUI 报出来的本地路径。
 - 环境里配了代理、而 `no_proxy` 没排除本机地址时，直接拒绝建客户端（`COMFY_CAPABILITY_UNAVAILABLE`），避免本机请求被代理转出去。
+
+### 磁盘扫描与运行时状态是两件事
+
+`comfyui_list_models` 每一条都带四个状态，四个互不推导：
+
+| 状态 | 来源 | 不知道时 |
+|---|---|---|
+| `disk_present` | 按配置/发现出来的模型根列目录 | 不会不知道，扫不到就是 `false` |
+| `runtime_visible` | `GET /models/<分类>` 返回的文件名列表 | `unknown` |
+| `loader_selectable` | `/object_info` 里对应 loader 节点的下拉枚举 | `unknown` |
+| `execution_success` | 本进程内真实跑通过一次 | `unknown` |
+
+所以「磁盘上有这个模型」不代表 ComfyUI 认得它（分类目录名和分类名不一定同名，`unet/` 会映射到 `diffusion_models`），「ComfyUI 认得」也不代表某个 loader 的下拉里能选到。反过来，`vae` 的枚举里有 `pixel_space`、`taesd` 这类**虚拟项**，它们不对应任何磁盘文件——这些单独放在 `virtual_entries` 里，不混进模型清单。
+
+`execution_success` 只在 `/history` 明确说完成、没有执行错误、工作流结构和本次提交对得上、且输出里确实有能安全取回的图片时才会写。它**不写进任何本地数据库**：每次查询都从 ComfyUI 的 `/history` 重新推导，记录被 ComfyUI 清掉就没了——**不要把它当历史数据库**。
+
+### 启动与打开
+
+`comfyui_start` 只有四个固定动作，接口里根本没有「命令」这个字段：
+
+| 动作 | 行为 |
+|---|---|
+| `start_backend` | 先探 `/system_stats`；已经在响应就返回 `started: false, reason: already_running`，一次都不 spawn。没响应才找解释器，argv 写死为 `[python, main.py, --listen, 127.0.0.1, --port, <端口>]`，cwd 是安装根 |
+| `open_launcher` | 在安装根和它的上一级里按固定文件名找启动器；零个报 `COMFY_CAPABILITY_UNAVAILABLE` 并列出找过的路径，**多个报 `COMFY_BINDING_AMBIGUOUS` 并列出全部候选，不替你挑** |
+| `open_install_folder` | 用 `explorer.exe` 打开安装根 |
+| `open_web_ui` | 用系统默认处理程序打开当前地址；非回环地址直接 `COMFY_TARGET_NOT_LOCAL` |
+
+解释器按 `python_embeded/python.exe`、`python/python.exe`、`venv/Scripts/python.exe`、`.venv/Scripts/python.exe` 的顺序在安装根和上一级里找（整合包常把 python 放在 `<包>/python/`，而安装根是 `<包>/ComfyUI`）。找不到时报错里会列出所有找过的路径，**不会去扫盘**。
+
+`dispose()` 只 `terminate()` 本插件自己启动的进程；你自己手动拉起来的 ComfyUI 从不进这条路径，插件卸载也不会把它带走。
+
+### 在对话里看图
+
+`comfyui_get_job` 完成时会往工具结果里写一组最小图片引用（`attachmentId`/`mediaType`/`bytes`/`width`/`height`），对话里的任务卡片据此渲染缩略图，点开是大图。
+
+图片走的是**同源转发**：插件在宿主 `webServer` 上挂一条 `/comfyui/image?filename=…` 的路由，服务端按 `/view` 的规矩重新校验输出引用（文件名不能含 `..` 或路径分隔符、`subfolder` 不能越界、`type` 只能是 `output|input|temp`），再从 ComfyUI 取原始字节原样转发。
+
+这么做有两个原因，都不是可以绕开的：
+
+- 页面 CSP 是 `default-src 'self'`，跨源到 `127.0.0.1:8188/view` 的图片会被浏览器直接拦掉。
+- 宿主只授权「会话事件里出现过的图片」给浏览器读。生成结果不在会话事件里，所以走宿主的附件通道拿不到。
+
+路由是懒注册的：第一次需要出图时才挂，`dispose()` 时注销——不注销的话下一次加载会因为路径重复注册而失败。宿主没有 `webServer` 时退回 ComfyUI 的原始地址（只在本机有效），而不是假装能显示。
+
+生成图**不会**变成模型的视觉输入：`render()` 里只有文本，图片引用只进卡片。
+
+### 已知限制
+
+- **Host 会把 PNG 转成 JPEG 再存**。ComfyUI 输出 `image/png`，经宿主 attachments 服务落盘后是 `image/jpeg`（体积明显变小，尺寸不变）。工具返回的 `media_type`/`bytes` 是宿主实际存下的值，不是原始 PNG 的大小——文档和报告里都不该说成"原始 PNG 附件"。卡片显示的图走同源路由取的是 ComfyUI 原始字节，两者不是同一份。
+- **`execution_success` 不落盘**，插件自己不写任何历史库。每次 `comfyui_get_job` 都从 ComfyUI 的 `/history` 重新推导：只要 ComfyUI 还留着那条记录，重载插件后仍然查得到；记录被 ComfyUI 清掉（默认只留最近若干条）就查不到了。返回里的 `persistence: process` 标的是**本次 run 的登记**（提交时那份 workflow 副本）只在进程内——重载后再查同一个 `prompt_id`，`workflow` 字段是 `null`，其余字段由 `/history` 还原。
+- **`partial_saved` 无法回滚**。多张图逐张保存，中途失败时已经存下的那张仍然交回去，并明确标 `partial_saved: true`——宿主的附件服务没有删除接口，回滚不了。
+- **UI 格式工作流只识别不转换**。`comfyui_inspect_workflow` 能读 UI 格式并报结构，但 `comfyui_plan_workflow_patch` 只接受 API 格式。
+- **不自动搭图**。补丁只改已存在字段，不新增节点、不改 `class_type`、不覆盖原文件。
+
+### Windows 整合版的坑
+
+秋葉这类整合包会把 ComfyUI 埋在 `<盘>:\ComfyUI\<启动器>\<启动器>\ComfyUI` 这种位置，启动器（`绘世启动器.exe`）和 python 都在**安装根的上一级**。插件对这两样都往上一级找，但如果你把 `installRoot` 指到了内层 `ComfyUI` 目录之外的地方，就会找不到。
+
+诊断顺序：
+
+1. `comfyui_status` 看 `discovery.status`。`found` 但 `runtime_reachable: false` 说明装好了没运行；`not_running` 同理；`ambiguous` 说明发现到多个实例，需要你填 `installRoot` 指定。
+2. `comfyui_status` 的 `base_url_source` 三档：`config`（只有配置值）、`discovery_candidate`（发现出来的、还没验证）、`verified`（真的 HTTP 连通过）。
+3. `start_backend` 报找不到解释器时，报错里会列出所有找过的路径——照着看是缺 `python_embeded` 还是安装根指错了。
+4. 卡片显示「重试」而不是图：先确认 `/comfyui/image` 路由挂上了（宿主没有 `webServer` 时会退回跨源地址，被 CSP 拦掉）。
 
 ## 技术
 
@@ -309,7 +395,7 @@ comfyui:
 | Python 可选 | `numpy`（几何度量）、`rawpy`（RAW 格式） |
 | 构建步骤 | 无 |
 | 类型标注 | JSDoc |
-| 网络 | 用户主动提供的图片 URL 下载；启用 ComfyUI 后只连本机 loopback；图片永远不会上传给第三方 |
+| 网络 | 用户主动提供的图片 URL 下载；启用 ComfyUI 后只连本机 loopback，生成图经宿主同源路由 `/comfyui/image` 转发；图片永远不会上传给第三方 |
 | 数据 | `data/` 下的本地 SQLite，不入库 |
 
 ## 故障排查
@@ -321,6 +407,12 @@ comfyui:
 | `KB_EMPTY` / 标签行异常地长 | 知识库还没建 | 跑一次 `rebuild_knowledge_base` |
 | `KB_IMPORT_FILE_UNREADABLE` | `sources[].path` 指向的文件不存在 | 对照 `res/` 检查 `configs/knowledge-base.default.json` |
 | `MODEL_PROFILE_NOT_SELECTED` | 没传 `target_profile` | 传 `illustrious` 或 `animagine-xl-4.0` |
+| `COMFY_CAPABILITY_UNAVAILABLE`（`comfyui_start`） | 没找到启动器，或没找到 python 解释器，或 Host 没有 `subprocess` 服务 | 看报错里列出的 `scanned_paths`；手填 `comfyui.installRoot` 指向真正的安装根 |
+| `COMFY_BINDING_AMBIGUOUS` | 安装根和上一级里找到多个启动器 | 报错里会列出全部候选；手动打开你要用的那个 |
+| `COMFY_TARGET_NOT_LOCAL` | `baseUrl` 或 `open_web_ui` 的目标不是回环地址 | 改回 `127.0.0.1` / `localhost` / `::1`；插件不会退回默认地址偷偷连本机 |
+| `COMFY_PATH_DENIED` | Host 文件系统服务拒绝了这次读取 | 这是终点，插件不会换 `node:fs` 绕过；检查路径权限或把它移出受保护目录 |
+| 卡片显示「重试」 | 同源路由没挂上，退回的跨源地址被 CSP 拦掉 | 确认 profile 里有 `webServer`；重载插件后再查一次任务 |
+| `COMFY_SUBMISSION_UNKNOWN` | 提交超时或断连，服务端到底收没收到不知道 | 去 ComfyUI 队列里看一眼；**插件不会自动重发**，重发前先确认队列里没有 |
 
 ## 许可证
 

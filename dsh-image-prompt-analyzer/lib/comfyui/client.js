@@ -4,6 +4,8 @@ import { COMFY_CODES, ComfyError } from './errors.js'
 export const LOOPBACK_HOSTS = Object.freeze(['127.0.0.1', '::1', 'localhost', '[::1]'])
 export const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 export const DEFAULT_TIMEOUT_MS = 30000
+/** 建运行时模型索引时最多查多少个分类，防止插件众多的实例把一次调用拖成几分钟。 */
+export const MAX_MODEL_CATEGORIES = 256
 
 /**
  * 只接受 loopback 的 http URL。
@@ -39,6 +41,8 @@ export function assertLoopbackUrl(raw) {
 const ALLOWED_PATHS = [
   /^\/system_stats$/,
   /^\/models$/,
+  // server.py:415 `@routes.get("/models/{folder}")`，folder 必须是已注册的分类名。
+  /^\/models\/[A-Za-z0-9_.-]+$/,
   /^\/object_info$/,
   /^\/object_info\/[A-Za-z0-9_.-]+$/,
   /^\/queue$/,
@@ -63,10 +67,10 @@ function assertAllowedPath(pathname) {
  * 一旦本机地址走了代理，请求实际发给了谁就不再可控，所以这里直接拒绝。
  */
 export function assertLoopbackNotProxied(hostname, { env = process.env, allowProxy = false } = {}) {
-  if (allowProxy) return
+  if (allowProxy) return true
   const proxy =
     env.http_proxy ?? env.HTTP_PROXY ?? env.all_proxy ?? env.ALL_PROXY ?? env.https_proxy ?? env.HTTPS_PROXY
-  if (!proxy) return
+  if (!proxy) return true
   const bypass = String(env.no_proxy ?? env.NO_PROXY ?? '')
     .split(',')
     .map((item) => item.trim().toLowerCase())
@@ -75,7 +79,7 @@ export function assertLoopbackNotProxied(hostname, { env = process.env, allowPro
   const covered = bypass.some(
     (item) => item === '*' || item === host || (item.startsWith('.') && host.endsWith(item)),
   )
-  if (covered) return
+  if (covered) return true
   throw new ComfyError(
     COMFY_CODES.CAPABILITY_UNAVAILABLE,
     `检测到环境代理 ${proxy}，而 no_proxy 没有排除本机地址 ${host}：请求可能被代理转发出去。`,
@@ -165,6 +169,9 @@ export function createComfyClient(options = {}) {
   async function once(method, pathname, { body = null, signal = null, timeoutOverride = null } = {}) {
     assertAllowedPath(pathname)
     const url = new URL(pathname, base)
+    // URL 构造会把 `/models/..` 这类路径归一成 `/`。对归一后的路径再查一次，
+    // 保证真正发出去的请求路径也在白名单里，而不是只查了字符串入参。
+    assertAllowedPath(url.pathname)
     const budget = combineSignals(signal, timeoutOverride ?? timeoutMs)
     try {
       const response = await fetchImpl(url, {
@@ -217,34 +224,82 @@ export function createComfyClient(options = {}) {
     throw lastError
   }
 
+  async function getJson(pathname, options) {
+    const result = await request('GET', pathname, options)
+    if (!result.ok) {
+      throw new ComfyError(COMFY_CODES.BAD_RESPONSE, `${pathname} 返回 HTTP ${result.status}。`)
+    }
+    return parseJson(result.text, pathname)
+  }
+
+  function assertStringArray(value, pathname) {
+    if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+      throw new ComfyError(COMFY_CODES.BAD_RESPONSE, `${pathname} 结构异常：应为字符串数组。`)
+    }
+    return value
+  }
+
   return {
     baseUrl: base.origin,
-    async getJson(pathname, options) {
-      const result = await request('GET', pathname, options)
-      if (!result.ok) {
-        throw new ComfyError(COMFY_CODES.BAD_RESPONSE, `${pathname} 返回 HTTP ${result.status}。`)
-      }
-      return parseJson(result.text, pathname)
-    },
+    getJson,
     async postJson(pathname, payload, options) {
       return request('POST', pathname, { ...options, body: payload })
     },
     async getSystemStats(options) {
-      const data = await this.getJson('/system_stats', options)
+      const data = await getJson('/system_stats', options)
       if (!data || typeof data !== 'object') {
         throw new ComfyError(COMFY_CODES.BAD_RESPONSE, '/system_stats 结构异常。')
       }
       return data
     },
-    async getModels(options) {
-      const data = await this.getJson('/models', options)
-      if (!data || typeof data !== 'object' || Array.isArray(data)) {
-        throw new ComfyError(COMFY_CODES.BAD_RESPONSE, '/models 结构异常。')
+    /**
+     * `GET /models` 在 server.py:409-413 里返回的是 `list(folder_names_and_paths.keys())`，
+     * 也就是分类名数组——不是分类到文件的映射。分类下的文件名要再逐类查。
+     */
+    async getModelCategories(options) {
+      return assertStringArray(await getJson('/models', options), '/models')
+    },
+    /**
+     * `GET /models/{folder}` 在 server.py:415-421：未注册的分类直接 404。
+     * 返回 null 表示"这个分类在当前运行时里不存在"，不是错误。
+     */
+    async getModelFiles(category, options) {
+      const raw = String(category)
+      // `.`/`..` 能通过白名单正则，但会在 URL 归一里跳出 /models/ 前缀。
+      if (raw === '.' || raw === '..') {
+        throw new ComfyError(COMFY_CODES.BAD_RESPONSE, `分类名不合法：${raw}`)
       }
-      return data
+      const safe = encodeURIComponent(raw)
+      const result = await request('GET', `/models/${safe}`, options)
+      if (result.status === 404) return null
+      if (!result.ok) {
+        throw new ComfyError(COMFY_CODES.BAD_RESPONSE, `/models/${category} 返回 HTTP ${result.status}。`)
+      }
+      return assertStringArray(parseJson(result.text, `/models/${category}`), `/models/${category}`)
+    },
+    /**
+     * 把运行时模型索引一次建好：分类 -> 文件名数组。
+     * 单个分类取不到时跳过并记录，不让一个分类拖垮整份索引。
+     */
+    async getModels(options = {}) {
+      const categories = await this.getModelCategories(options)
+      const files = {}
+      const missing = []
+      const failures = []
+      for (const category of categories.slice(0, MAX_MODEL_CATEGORIES)) {
+        if (options.signal?.aborted) break
+        try {
+          const names = await this.getModelFiles(category, options)
+          if (names === null) missing.push(category)
+          else files[category] = names
+        } catch (error) {
+          failures.push({ category, code: error?.code ?? null, message: error?.message ?? String(error) })
+        }
+      }
+      return { categories, files, missing, failures, truncated: categories.length > MAX_MODEL_CATEGORIES }
     },
     async getObjectInfo(options) {
-      const data = await this.getJson('/object_info', options)
+      const data = await getJson('/object_info', options)
       if (!data || typeof data !== 'object' || Array.isArray(data)) {
         throw new ComfyError(COMFY_CODES.BAD_RESPONSE, '/object_info 结构异常。')
       }

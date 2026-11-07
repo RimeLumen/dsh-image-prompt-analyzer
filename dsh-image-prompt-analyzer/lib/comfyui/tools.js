@@ -1,11 +1,13 @@
 
 import { COMFY_CODES, ComfyError } from './errors.js'
-import { envelope, fromException, TASK_STATUS } from '../diagnostics.js'
+import { envelope, fromException, diagnostic, SEVERITY, TASK_STATUS } from '../diagnostics.js'
 import { registerTool } from '../tools/registry.js'
-import { filterByStates, reconcileModels } from './reconcile.js'
+import { KNOWN_MODEL_EXTENSIONS, extensionOf } from './catalog.js'
+import { CATEGORY_LOADERS, filterByStates, reconcileModels } from './reconcile.js'
 import { inspectWorkflow, requireApiPrompt } from './workflow.js'
 import { applyWorkflowPatch, planWorkflowPatch } from './patch.js'
 import { RUN_STATES } from './runs.js'
+import { LAUNCHER_ACTION_VALUES } from './launcher.js'
 
 const STATE_FILTER = {
   type: 'object',
@@ -17,6 +19,10 @@ const STATE_FILTER = {
   },
   additionalProperties: false,
 }
+
+// 运行时独有条目的上报上限。custom_nodes 这类目录型分类能上万条，
+// 截断但如实报总数，比让调用方一次收几 MB 更有用。
+const VIRTUAL_LIMIT = 200
 
 async function readWorkflowFromPath(rt, filePath, signal) {
   const adapter = rt.fsAdapter
@@ -47,24 +53,106 @@ async function resolveWorkflow(rt, args, signal) {
   )
 }
 
-function guarded(toolName, runtime, impl, { requiresEnabled = true } = {}) {
+/** 每个工具失败时要说清是哪个动作被拦下的，不能出现 undefined。 */
+const TOOL_ACTIONS = Object.freeze({
+  comfyui_status: '检查连接状态',
+  comfyui_list_models: '列出本地模型',
+  comfyui_inspect_workflow: '检查工作流',
+  comfyui_plan_workflow_patch: '规划工作流补丁',
+  comfyui_submit_workflow: '提交工作流',
+  comfyui_get_job: '查询任务',
+  comfyui_start: '启动或打开 ComfyUI',
+})
+
+function actionLabelOf(toolName) {
+  const label = TOOL_ACTIONS[toolName]
+  return typeof label === 'string' && label !== '' ? label : '该操作'
+}
+
+/**
+ * 补丁被整份作废时，`error.details` 里每一处失败都带着自己的 node_id / class_type /
+ * input。只回一条汇总诊断等于把用户最需要的那行信息丢了，所以逐条摊开。
+ */
+/** 输出引用不合法时给 null，不替调用方拼一个可能越界的 /view 链接。 */
+function safeUrl(comfy, image) {
+  // 先试同源转发：页面 CSP 是 default-src 'self'，跨源地址会被浏览器拦掉。
+  try {
+    const proxied = comfy.imageProxyUrl(image)
+    if (typeof proxied === 'string' && proxied !== '') return proxied
+  } catch {
+    // 宿主没有 webServer 时退回下面的原始地址。
+  }
+  try {
+    return comfy.imageViewUrl(image)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Host 的附件引用是下划线式（attachment_id / media_type），浏览器半侧的
+ * ImageAttachmentRef 是驼峰（attachmentId / mediaType）。两边字段名不一样，
+ * 这里只做改名，不做补全：缺字段的引用在浏览器侧会被判成非法并退回纯文本卡片，
+ * 不会被拼成一个假的图片。
+ */
+function presentationImages(attachments, images) {
+  const list = Array.isArray(attachments) ? attachments : []
+  // 附件是按文件名建的索引：collectImages 会跳过不合格的图，按下标对会错位。
+  const urls = new Map()
+  for (const image of Array.isArray(images) ? images : []) {
+    if (typeof image?.filename === 'string' && typeof image?.url === 'string') urls.set(image.filename, image.url)
+  }
+  return list
+    .filter((item) => item && typeof item.attachment_id === 'string' && item.attachment_id !== '')
+    .map((item) => ({
+      attachmentId: item.attachment_id,
+      mediaType: item.media_type,
+      bytes: item.bytes,
+      width: item.width,
+      height: item.height,
+      ...(typeof item.name === 'string' && item.name !== '' ? { name: item.name } : {}),
+      // 宿主只授权「会话事件里出现过的图片」给浏览器读；生成结果不在事件里，
+      // 所以附件读不到时浏览器退回直接取 ComfyUI 的 /view。这个地址只在本机有效。
+      ...(typeof item.name === 'string' && urls.has(item.name) ? { url: urls.get(item.name) } : {}),
+    }))
+}
+
+function expandDetails(error) {
+  const details = Array.isArray(error?.details) ? error.details : []
+  return details.map((item) =>
+    diagnostic({
+      error_code: item.error_code ?? COMFY_CODES.VALIDATION_FAILED,
+      severity: SEVERITY.ERROR,
+      message: item.message ?? '校验失败。',
+      suggested_fix: item.suggested_fix ?? null,
+    }),
+  ).map((item, index) => ({
+    ...item,
+    node_id: details[index].node_id ?? null,
+    class_type: details[index].class_type ?? null,
+    input: details[index].input ?? null,
+    field: details[index].field ?? null,
+  }))
+}
+
+function guarded(toolName, runtime, impl, { requiresEnabled = true, action = null } = {}) {
   return async (args, exec) => {
     try {
       const comfy = await runtime.getComfyUI()
       // 未启用时先拦下来：参数校验、文件解析、网络请求一个都不该发生，
       // 否则用户会拿到"参数不对"这种与真实原因无关的报错。
-      if (requiresEnabled) comfy.ensureEnabled()
+      if (requiresEnabled) comfy.ensureEnabled(action ?? actionLabelOf(toolName))
       const signal = args?.signal ?? exec?.signal ?? null
       return await impl(comfy, signal ? { ...(args ?? {}), signal } : (args ?? {}))
     } catch (error) {
       runtime.logger?.error?.(`工具 ${toolName} 执行失败`, error)
+      const summary =
+        typeof error?.toDiagnostic === 'function'
+          ? error.toDiagnostic()
+          : fromException(error, { error_code: error?.code ?? 'TOOL_EXECUTION_FAILED' })
       return envelope({
         status: TASK_STATUS.FAILED,
-        diagnostics: [
-          typeof error?.toDiagnostic === 'function'
-            ? error.toDiagnostic()
-            : fromException(error, { error_code: error?.code ?? 'TOOL_EXECUTION_FAILED' }),
-        ],
+        diagnostics: [summary, ...expandDetails(error)],
       })
     }
   }
@@ -86,8 +174,45 @@ export function createComfyToolSpecs(runtime) {
           if (!described.enabled) {
             return { ...described, reachable: false, message: 'ComfyUI 集成未启用。' }
           }
-          const status = await comfy.status({ signal: args.signal })
-          return { ...described, ...status, reachable: true }
+
+          // 先只做本地发现（不探测端口），这样"已安装未运行"和"根本没装"
+          // 能分开报，用户才知道下一步该干什么。
+          let discovery = null
+          let discoveryError = null
+          try {
+            discovery = await comfy.discover({ probe: false, signal: args.signal })
+          } catch (error) {
+            discoveryError = error?.message ?? String(error)
+          }
+
+          let status = null
+          let reachable = false
+          try {
+            status = await comfy.status({ signal: args.signal })
+            reachable = true
+          } catch (error) {
+            status = { reachable: false, error: error?.message ?? String(error) }
+          }
+
+          const message = (() => {
+            if (discoveryError) return `自动发现失败：${discoveryError}`
+            if (!discovery) return reachable ? 'ComfyUI 已连接。' : 'ComfyUI 未连接。'
+            if (discovery.status === 'not_found') return '没有在本机的已知位置发现 ComfyUI 安装；可以手动填写 comfyui.installRoot。'
+            if (discovery.status === 'ambiguous') return `发现 ${discovery.candidates.length} 个 ComfyUI 候选，需要人工确认用哪一个。`
+            if (discovery.status === 'not_running') return '发现了 ComfyUI 安装，但它当前没有运行。'
+            if (!reachable) return '发现了 ComfyUI 安装，但 API 没有响应。'
+            return 'ComfyUI 已连接。'
+          })()
+
+          return {
+            // 这里要重新取一次：status 刚把地址标成"验证过"，
+            // 用开头那份快照会把 base_url_source 和 verified_base_url 报成互相矛盾的值。
+            ...comfy.describe(),
+            ...(status ?? {}),
+            reachable,
+            discovery,
+            message,
+          }
         },
         // status 是唯一在未启用时也要能回答的工具：用户得先看到为什么不能用。
         { requiresEnabled: false },
@@ -117,18 +242,43 @@ export function createComfyToolSpecs(runtime) {
         let runtimeAvailable = false
         let models = null
         let loaderEnums = null
+        const runtimeDiagnostics = []
         try {
           const client = comfy.getClient()
-          models = await client.getModels({ signal: args.signal })
+          const index = await client.getModels({ signal: args.signal })
+          // reconcile 要的是"分类 -> 文件名数组"，client 已经把分类列表摊平好了。
+          models = index.files
           runtimeAvailable = true
+          if (index.failures.length > 0) {
+            runtimeDiagnostics.push(
+              diagnostic({
+                error_code: COMFY_CODES.SCAN_PARTIAL,
+                severity: SEVERITY.WARNING,
+                message: `运行时模型索引有 ${index.failures.length} 个分类取不到，这些分类的运行时状态记为 unknown。`,
+                suggested_fix: '稍后重试，或在 ComfyUI 日志里确认对应自定义节点是否报错。',
+              }),
+            )
+          }
           loaderEnums = {}
-          for (const node of ['CheckpointLoaderSimple', 'LoraLoader', 'VAELoader']) {
+          // 只问有 loader 的分类对应那几个节点：真实实例上 /object_info 是几百 KB，
+          // 多问一个就多一次往返，而没 loader 的分类本来就算不出 loader_selectable。
+          const loaderNodes = [...new Set(Object.values(CATEGORY_LOADERS).map((item) => item.node))]
+          for (const node of loaderNodes) {
             const info = await client.getObjectInfoFor(node, { signal: args.signal }).catch(() => null)
             if (info) loaderEnums[node] = info
           }
-        } catch {
+        } catch (error) {
           // 连不上就如实记 unknown，不把"没启动"写成"运行时不可见"。
+          // 但原因不能吞掉：否则 status 说能连、list_models 说不可达，用户无从判断。
           runtimeAvailable = false
+          runtimeDiagnostics.push(
+            diagnostic({
+              error_code: error?.code ?? COMFY_CODES.CAPABILITY_UNAVAILABLE,
+              severity: SEVERITY.WARNING,
+              message: `取运行时模型索引失败：${error?.message ?? error}`,
+              suggested_fix: error?.suggested_fix ?? '用 comfyui_status 确认连接状态；连不上时运行时三态只能记为 unknown。',
+            }),
+          )
         }
 
         const reconciled = reconcileModels({
@@ -138,10 +288,14 @@ export function createComfyToolSpecs(runtime) {
           runtimeAvailable,
         })
 
-        let entries = reconciled.entries
-        if (typeof args.category === 'string' && args.category !== '') {
-          entries = entries.filter((entry) => entry.category === args.category)
-        }
+        // .metadata.json、.txt、预览图常和权重放在同一个目录里，但它们不是模型：
+        // ComfyUI 自己只列已知扩展名，这里同样按 known_format 收一遍，并把跳过的数量报出来。
+        const categoryFilter = typeof args.category === 'string' && args.category !== '' ? args.category : null
+        const scoped = categoryFilter
+          ? reconciled.entries.filter((entry) => entry.category === categoryFilter)
+          : reconciled.entries
+        const nonModelSkipped = scoped.filter((entry) => entry.known_format === false).length
+        let entries = scoped.filter((entry) => entry.known_format !== false)
         if (typeof args.name_contains === 'string' && args.name_contains !== '') {
           const needle = args.name_contains.toLowerCase()
           entries = entries.filter((entry) => entry.name.toLowerCase().includes(needle))
@@ -151,16 +305,29 @@ export function createComfyToolSpecs(runtime) {
         }
 
         const limit = args.limit ?? 200
+        // 运行时分类里有 custom_nodes / configs 这类按目录列举的分类，条目能上万条，
+        // 里面绝大多数是 .py/.pyc/.md，不是模型。先按扩展名收一遍，再截断并如实报总数。
+        const virtualAll = reconciled.virtual.filter(
+          (item) =>
+            (item.virtual || KNOWN_MODEL_EXTENSIONS.includes(extensionOf(item.name))) &&
+            (!categoryFilter || item.category === categoryFilter),
+        )
+        const virtualTotal = virtualAll.length
+        const virtualEntries = virtualAll.slice(0, VIRTUAL_LIMIT)
         return {
           total: entries.length,
           returned: Math.min(limit, entries.length),
           entries: entries.slice(0, limit),
-          virtual_entries: reconciled.virtual,
+          virtual_entries: virtualEntries,
+          virtual_total: virtualTotal,
+          virtual_truncated: virtualTotal > VIRTUAL_LIMIT,
+          virtual_skipped: reconciled.virtual.length - virtualTotal,
+          non_model_skipped: nonModelSkipped,
           categories: scanned.categories,
           roots: scanned.roots,
           partial: scanned.partial,
           runtime_available: runtimeAvailable,
-          diagnostics: [...scanned.diagnostics, ...reconciled.diagnostics],
+          diagnostics: [...scanned.diagnostics, ...runtimeDiagnostics, ...reconciled.diagnostics],
         }
       }),
     },
@@ -305,29 +472,76 @@ export function createComfyToolSpecs(runtime) {
         const collected =
           includeImages && run.state === RUN_STATES.COMPLETED
             ? await comfy.collectImages({ run, signal: args.signal })
-            : { attachments: [], images: [], diagnostics: [] }
+            : { attachments: [], images: [], diagnostics: [], partial_saved: false }
         return {
           run_id: run.run_id ?? null,
           prompt_id: run.prompt_id ?? null,
           state: run.state ?? RUN_STATES.UNKNOWN,
           message: run.message ?? null,
           attachments: collected.attachments,
+          // 保存阶段中途失败时，attachments 里那几张是真的存下来了。
+          partial_saved: collected.partial_saved === true,
           images: includeImages
             ? (run.images ?? []).map((image) => ({
                 ...image,
-                url: comfy.imageViewUrl(image),
+                // 引用不合法时给 null，不替调用方拼一个可能越界的链接。
+                url: safeUrl(comfy, image),
               }))
             : [],
           diagnostics: collected.diagnostics,
           finished_at: run.finished_at ?? null,
+          // 只有 /history 证明完成、且输出里真有可取的图，这里才有内容。
+          execution_success: run.execution_success ?? null,
+          workflow: run.workflow ?? null,
         }
       }),
+      // 浏览器半侧只认这份最小快照：状态、消息、附件引用。
+      // 不放 data URL，也不放 base64——图片字节留在 Host 的附件库里。
+      presentationMeta: (args, value) => ({
+        state: typeof value?.state === 'string' ? value.state : 'unknown',
+        message: typeof value?.message === 'string' ? value.message : null,
+        images: presentationImages(value?.attachments, value?.images),
+      }),
+    },
+
+    {
+      name: 'comfyui_start',
+      description:
+        '启动或打开本机 ComfyUI。只有四个固定动作：打开整合包启动器、直接启动后端、打开安装目录、打开 Web UI。' +
+        '不接受命令字符串，也不在你没调用它的时候启动任何进程；已经在响应中的实例不会被重复启动，' +
+        '用户自己启动的 ComfyUI 也不会被结束。',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: [...LAUNCHER_ACTION_VALUES],
+            description:
+              'open_launcher 打开整合包启动器；start_backend 直接跑 main.py；' +
+              'open_install_folder 打开安装目录；open_web_ui 用系统浏览器打开当前地址。',
+          },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+      execute: guarded('comfyui_start', runtime, async (comfy, args) =>
+        comfy.start({ action: args.action, signal: args.signal }),
+      ),
     },
   ]
 }
 
-/** 注册六个 ComfyUI 工具。注册失败时回滚已注册的部分。 */
+/**
+ * 注册六个 ComfyUI 工具。注册失败时回滚已注册的部分。
+ *
+ * 显式 enabled:false 时一个都不注册：关闭状态下不该出现这六个工具，
+ * 也不该因为注册而触发任何发现或连接。
+ */
 export function registerComfyTools(ctx, runtime) {
+  if (runtime?.comfyuiEnabled === false) {
+    runtime.logger?.info?.('comfyui.enabled 为 false，跳过注册 ComfyUI 工具。')
+    return []
+  }
   const disposers = []
   for (const spec of createComfyToolSpecs(runtime)) {
     try {

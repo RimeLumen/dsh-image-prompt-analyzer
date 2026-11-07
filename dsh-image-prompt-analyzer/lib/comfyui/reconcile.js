@@ -1,5 +1,6 @@
 
 import { COMFY_CODES } from './errors.js'
+import { enumOptionsOf } from './patch.js'
 
 // 四种状态各自独立记录，任何一个都不允许由另一个推导出来。
 export const MODEL_STATES = Object.freeze({
@@ -93,7 +94,7 @@ export function reconcileModels({
     if (runtimeAvailable && loader) {
       const info = enumsByNode.get(loader.node)
       const spec = info?.input?.required?.[loader.field]
-      const options = Array.isArray(spec) ? spec[0] : null
+      const options = enumOptionsOf(spec)
       if (Array.isArray(options)) {
         const names = options.map(normalizeRelative)
         loaderSelectable = String(names.includes(relInCategory) || names.includes(rel))

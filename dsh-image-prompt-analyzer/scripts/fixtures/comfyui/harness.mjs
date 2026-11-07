@@ -103,6 +103,18 @@ export function createMemoryFs({ tree = {}, symlinks = {}, deny = [] } = {}) {
       const c = child.targetKey
       return c === p || c.startsWith(`${p}/`)
     },
+    // Host fs 的真实方法名是 readText(target, signal)；适配器直接调它。
+    async readText(target) {
+      stats.readCalls += 1
+      const info = infoOf(target.targetKey)
+      if (!info || info.type !== 'file') {
+        const error = new Error('ENOENT')
+        error.code = 'ENOENT'
+        throw error
+      }
+      return info.text ?? ''
+    },
+    // 旧名字保留：早期用例直接拿适配器的 readTextBounded 名字当 api 用。
     async readTextBounded(target) {
       stats.readCalls += 1
       const info = infoOf(target.targetKey)
@@ -123,6 +135,26 @@ export function createMemoryFs({ tree = {}, symlinks = {}, deny = [] } = {}) {
   return adapter
 }
 
+/**
+ * 造一段只有头部的 PNG：签名 + IHDR。取图预检只看文件头，不需要真的像素数据，
+ * 但头部必须合法——这正是"不能只信 Content-Type"要验证的东西。
+ */
+export function pngBytes(width = 2, height = 2) {
+  const header = new Uint8Array(33)
+  header.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0)
+  header.set([0x00, 0x00, 0x00, 0x0d], 8)
+  header.set([0x49, 0x48, 0x44, 0x52], 12)
+  const view = new DataView(header.buffer)
+  view.setUint32(16, width)
+  view.setUint32(20, height)
+  header.set([0x08, 0x02, 0x00, 0x00, 0x00], 24)
+  return header
+}
+
+export function imageResponse(bytes, mediaType = 'image/png') {
+  return new Response(bytes, { status: 200, headers: { 'content-type': mediaType } })
+}
+
 function jsonResponse(status, body) {
   const text = typeof body === 'string' ? body : JSON.stringify(body)
   return {
@@ -141,6 +173,40 @@ function jsonResponse(status, body) {
           releaseLock() {},
         }
       },
+    },
+  }
+}
+
+/**
+ * 假的 subprocess 服务。只实现 T18 用到的 spawn：记下每次 argv，
+ * 返回一个立刻退出（或挂住不退出）的句柄，好让测试分辨"打开了"和"还在跑"。
+ */
+export function createFakeSubprocess({ hang = false, exitCode = 0 } = {}) {
+  const calls = []
+  const handles = []
+  return {
+    calls,
+    handles,
+    spawn(spec) {
+      calls.push(spec)
+      let terminated = 0
+      const handle = {
+        stdin: undefined,
+        stdout: undefined,
+        stderr: undefined,
+        control: undefined,
+        collected: { stdout: { readFrom: () => ({ text: '', nextOffset: 0, lossy: false }) } },
+        done: hang ? new Promise(() => {}) : Promise.resolve({ exitCode, signal: null }),
+        terminate() {
+          terminated += 1
+        },
+        waitForExit: async () => true,
+        get terminateCalls() {
+          return terminated
+        },
+      }
+      handles.push(handle)
+      return handle
     },
   }
 }

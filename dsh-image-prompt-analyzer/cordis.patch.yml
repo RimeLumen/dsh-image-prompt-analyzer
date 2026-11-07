@@ -10,13 +10,13 @@
 #   由插件自己在运行时读取与校验
 #
 # 【为什么这里只有一行】
-#   本插件是纯对话形态：全部能力通过工具暴露给模型，没有浏览器半侧。
-#   早先有过一个客户端工作台（client.js + /dsh-image-prompt-analyzer/api 只读路由），
-#   已整体移除；package.json 里不再声明 `dsh.client`，exports 里也没有 `./client`，
-#   所以 DSH 的模块系统不会把这个包扫描成"浏览器插件"。
-#   如果将来要加回来，注意：在 patch 里写 `name: '.../client'` 会让宿主把它当成
+#   本插件的全部能力都通过工具暴露给模型；浏览器半侧只负责把 comfyui_get_job
+#   的结果画成卡片，没有独立页面，也没有 HTTP 路由。
+#   client.js 不在 patch 里出现：它在 package.json 的 `dsh.client` 与
+#   `exports["./client"]` 里声明，由 DSH 的模块系统自己扫描并注入。
+#   注意不要在 patch 里写 `name: '.../client'` —— 那会让宿主把它当成
 #   第二个 **Host** 插件去 import，而 client.js 的第一句是
-#   `window.__ModuleLoader__.load(...)` —— 宿主进程里没有 window，
+#   `window.__ModuleLoader__.load(...)`，宿主进程里没有 window，
 #   结果是启动时一句「1 entry did not activate ... failed to import」。
 # ============================================================================
 

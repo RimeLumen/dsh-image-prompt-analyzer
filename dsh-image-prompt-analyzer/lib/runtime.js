@@ -86,6 +86,14 @@ export function createRuntime({ ctx, config = {}, logger: loggerOverride = null 
     getPreparer: () => preparerLazy.get(),
     getVisionBackend: () => visionLazy.get(),
     getComfyUI: () => comfyuiLazy.get(),
+    /**
+     * 同步可读的开关，供工具注册阶段判断要不要注册 ComfyUI 工具。
+     * 显式 enabled:false 时连注册都不做——不发现、不连接、不出现这六个工具。
+     */
+    get comfyuiEnabled() {
+      const section = pluginConfig?.comfyui
+      return section?.enabled !== false && !section?.disabled_reason
+    },
     readImageBytes,
 
     peekConfigSnapshot() {

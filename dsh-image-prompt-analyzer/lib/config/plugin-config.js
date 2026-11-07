@@ -1,7 +1,13 @@
 
 import { diagnostic, SEVERITY } from '../diagnostics.js'
 import { MIGRATE_CODES } from './migrate.js'
-import { DEFAULT_COMFY_BASE_URL, DEFAULT_COMFY_TIMEOUT_MS, normalizeComfySettings } from '../comfyui/index.js'
+import {
+  DEFAULT_COMFY_AUTO_DETECT,
+  DEFAULT_COMFY_BASE_URL,
+  DEFAULT_COMFY_ENABLED,
+  DEFAULT_COMFY_TIMEOUT_MS,
+  normalizeComfySettings,
+} from '../comfyui/index.js'
 
 const PLUGIN_CONFIG_CODES = Object.freeze({
   SECRET_IN_CONFIG: 'PLUGIN_CONFIG_SECRET_IN_CONFIG',
@@ -74,10 +80,12 @@ export const DEFAULT_PLUGIN_CONFIG = Object.freeze({
     max_tasks: 10,
   }),
 
-  // ComfyUI 接入默认关闭：不配置时插件行为与 1.0 完全一致，
-  // 也不会去碰用户的模型目录。installRoot 只接受绝对路径——它指向插件包之外。
+  // ComfyUI 接入默认打开并默认自动发现：装完即用，不需要用户先填路径。
+  // 但发现是惰性的——插件加载阶段不扫描任何目录，第一次调用工具时才动。
+  // 显式写 enabled: false 才是彻底关闭：不发现、不连接、不注册工具。
   comfyui: Object.freeze({
-    enabled: false,
+    enabled: DEFAULT_COMFY_ENABLED,
+    autoDetect: DEFAULT_COMFY_AUTO_DETECT,
     baseUrl: DEFAULT_COMFY_BASE_URL,
     installRoot: null,
     extraModelPathsConfigFiles: Object.freeze([]),
@@ -295,6 +303,7 @@ export const PLUGIN_CONFIG_SCHEMA = Object.freeze({
       additionalProperties: false,
       properties: {
         enabled: { type: 'boolean' },
+        autoDetect: { type: 'boolean' },
         baseUrl: { type: 'string', minLength: 1 },
         installRoot: { type: ['string', 'null'], minLength: 1 },
         extraModelPathsConfigFiles: { type: 'array', items: { type: 'string', minLength: 1 } },

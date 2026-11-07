@@ -23,9 +23,22 @@ function typeNameOf(spec) {
   return typeof head === 'string' ? head : 'UNKNOWN'
 }
 
-function optionsOf(spec) {
+/**
+ * /object_info 里枚举字段有两种形状，两种都在真实实例上出现过：
+ *   旧版 `[["a.safetensors", "b.safetensors"], { ... }]`（选项直接当第一项）
+ *   V3   `["COMBO", { options: ["a", "b"], multiselect: false }]`
+ * 只认第一种会让 UpscaleModelLoader.model_name 这类字段被判成"无法校验"。
+ */
+export function enumOptionsOf(spec) {
   const head = Array.isArray(spec) ? spec[0] : null
-  return Array.isArray(head) ? head : null
+  if (Array.isArray(head)) return head
+  const opts = Array.isArray(spec) ? spec[1] : null
+  if (head === 'COMBO' && Array.isArray(opts?.options)) return opts.options
+  return null
+}
+
+function optionsOf(spec) {
+  return enumOptionsOf(spec)
 }
 
 function constraintsOf(spec) {
@@ -181,7 +194,9 @@ export function planWorkflowPatch({ prompt, objectInfo, changes }) {
     } catch (error) {
       errors.push({
         node_id: nodeId === undefined ? null : String(nodeId),
+        class_type: prompt[String(nodeId)]?.class_type ?? (classType ?? null),
         field: field ?? null,
+        input: value === undefined ? null : value,
         error_code: error.code ?? COMFY_CODES.VALIDATION_FAILED,
         message: error.message,
         suggested_fix: error.suggested_fix ?? null,
