@@ -162,7 +162,9 @@ Animagine XL 4.0 刻意留在标签路径上 —— 它的 Model Card 限定它�
 | 模型 | 档案 ID | 关键标准 |
 |---|---|---|
 | Illustrious XL | `illustrious` | `masterpiece, best quality, very aesthetic, absurdres`，标签语域 |
-| Animagine XL 4.0 | `animagine-xl-4.0` | 只用标签式提示词，`high score` 质量块 |
+| Anima | `anima` | 正向走自然语言描述版（`word_style: prose`），`high score` 质量块 |
+
+`anima` 曾用名 `animagine-xl-4.0`，`AnimaImage`、`animagine`、`animagine-xl` 也都是它的别名——同一份档案，不是多个模型。旧名写在 `aliases` 里，按旧名查照样解析到 `anima`；忽略大小写与 `- _ . 空白` 的写法（`AnimaImage`、`ANIMAGINE-XL-4.0`）也能查到。别名冲突时不猜，直接报找不到。
 
 新增一个模型就是在 `configs/model-profiles/` 里加一个 JSON 文件 —— 不用改代码。
 
@@ -414,7 +416,7 @@ comfyui:
 | `PYTHON_UNAVAILABLE` | `python.executable` 解析不到，或 `python.enabled: false` | 把 `python.executable` 设成解释器的绝对路径 |
 | `KB_EMPTY` / 标签行异常地长 | 知识库还没建 | 跑一次 `rebuild_knowledge_base` |
 | `KB_IMPORT_FILE_UNREADABLE` | `sources[].path` 指向的文件不存在 | 对照 `res/` 检查 `configs/knowledge-base.default.json` |
-| `MODEL_PROFILE_NOT_SELECTED` | 没传 `target_profile` | 传 `illustrious` 或 `animagine-xl-4.0` |
+| `MODEL_PROFILE_NOT_SELECTED` | 没传 `target_profile` | 传 `illustrious` 或 `anima` |
 | `COMFY_CAPABILITY_UNAVAILABLE`（`comfyui_start`） | 没找到启动器，或没找到 python 解释器，或 Host 没有 `subprocess` 服务 | 看报错里列出的 `scanned_paths`；手填 `comfyui.installRoot` 指向真正的安装根 |
 | `COMFY_BINDING_AMBIGUOUS` | 安装根和上一级里找到多个启动器 | 报错里会列出全部候选；手动打开你要用的那个 |
 | `COMFY_TARGET_NOT_LOCAL` | `baseUrl` 或 `open_web_ui` 的目标不是回环地址 | 改回 `127.0.0.1` / `localhost` / `::1`；插件不会退回默认地址偷偷连本机 |

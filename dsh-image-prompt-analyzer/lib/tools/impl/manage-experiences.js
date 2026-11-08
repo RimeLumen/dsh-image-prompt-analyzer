@@ -11,6 +11,32 @@ async function openHandle(runtime) {
   return opened.handle
 }
 
+/**
+ * 把用户给的档案名展开成"这个档案曾经用过的所有名字"。
+ * 档案改过名之后，旧记录里存的还是旧 config_id；只按新名查等于把历史清空。
+ * 展开结果只用于筛选，不改变记录的存储值。
+ */
+async function expandProfileAliases(runtime, value) {
+  if (typeof value !== 'string' || value.trim() === '') return null
+  let store
+  try {
+    store = await runtime.getConfigStore()
+  } catch {
+    return null
+  }
+  const entry = store?.getModelProfile?.(value)
+  if (!entry) return null
+  const names = [entry.config_id]
+  for (const alias of Array.isArray(entry.config?.aliases) ? entry.config.aliases : []) {
+    const text = typeof alias === 'string' ? alias.trim() : ''
+    if (text !== '' && !names.includes(text)) names.push(text)
+  }
+  // 用户写的就是别名时，也把它自己带上，免得历史里存的是用户习惯的写法。
+  const requested = value.trim()
+  if (!names.includes(requested)) names.push(requested)
+  return names
+}
+
 export async function runManageExperiences(runtime, args = {}) {
   const action = typeof args.action === 'string' ? args.action : 'list'
   if (!EXPERIENCE_ACTIONS.includes(action)) {
@@ -47,7 +73,7 @@ export async function runManageExperiences(runtime, args = {}) {
     })
   }
 
-  const readOnly = runReadAction(handle, action, args, diagnostics)
+  const readOnly = runReadAction(handle, action, { ...args, target_profile_aliases: await expandProfileAliases(runtime, args.target_profile) }, diagnostics)
   if (readOnly) return readOnly
 
   if (action === 'rate') return runRateAction(handle, args, diagnostics)

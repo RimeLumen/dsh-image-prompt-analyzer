@@ -77,7 +77,7 @@ CREATE INDEX IF NOT EXISTS idx_tagimpl_implied ON tag_implications (implied_tag_
 DROP TABLE IF EXISTS source_cache;
 
 -- 分析经验。image_hash 是**内容哈希，不是原图**（文档 §11：默认不永久保存原图）。
--- target_profile 是产出该提示词的目标档案（illustrious / animagine-xl-4.0），
+-- target_profile 是产出该提示词的目标档案（illustrious / anima），
 -- slots_snapshot 保存编译后的槽位结构，供之后按 target_profile 隔离检索与对照。
 CREATE TABLE IF NOT EXISTS prompt_experiences (
   id                  INTEGER PRIMARY KEY,

@@ -29,6 +29,12 @@ export const TRACE_STAGES = Object.freeze({
   IR_POST_EVIDENCE: 'ir_post_evidence',
   PROMPTS: 'prompts',
   FACT_LEDGER: 'fact_ledger',
+  // 下面四段是「工具默认不再返回」的那部分：槽位、成分句、还原审计、覆盖率、统计。
+  // 它们从对话里搬到了这里，不是被删掉了——事后要查还是查得到。
+  COMPILE_AUDIT: 'compile_audit',
+  FIDELITY: 'fidelity',
+  COVERAGE: 'coverage',
+  DIAGNOSTICS: 'diagnostics',
 })
 
 export const TRACE_STATUS = Object.freeze({

@@ -9,18 +9,21 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { registerAllTools } from '../lib/tools/index.js'
 import { compilePrompt } from '../lib/compile/index.js'
-import { resolveProfileRequest } from '../lib/config/loader.js'
+import { createConfigStore, resolveProfileRequest } from '../lib/config/loader.js'
 // PLUGIN_CONFIG_CODES 没有从 plugin-config.js 导出，所以这里比对错误码字面量。
 // 字面量同时也是对外契约的一部分：诊断里的 error_code 就是这些字符串。
 import { DEFAULT_PLUGIN_CONFIG, PLUGIN_CONFIG_SCHEMA, resolvePluginConfig } from '../lib/config/plugin-config.js'
 import { createRuntime } from '../lib/runtime.js'
 import { PLUGIN_VERSION } from '../lib/version.js'
+import { buildAnalysisEnvelope, traceStage } from '../lib/pipeline/stages.js'
+import { TRACE_STAGES } from '../lib/trace/stages.js'
 import {
   COMFY_CODES,
   ComfyError,
@@ -35,6 +38,9 @@ import { scanModelRoots, scanRoot } from '../lib/comfyui/catalog.js'
 import { CATEGORY_LOADERS, filterByStates, reconcileModels } from '../lib/comfyui/reconcile.js'
 import { assertLoopbackNotProxied, createComfyClient } from '../lib/comfyui/client.js'
 import { analyzeBindings, resolvePromptTarget } from '../lib/comfyui/bindings.js'
+import { openKnowledgeDatabase } from '../lib/kb/db.js'
+import { experienceStats, listExperiences, searchExperiences } from '../lib/experience/store.js'
+import { runManageExperiences } from '../lib/tools/impl/manage-experiences.js'
 import {
   applyWorkflowPatch,
   enumOptionsOf,
@@ -132,11 +138,15 @@ const CORE_TOOL_REQUIRED = {
  * 只改属性的书写顺序不会让它变，改任何一个枚举值、范围、描述都会。
  */
 const CORE_TOOL_SCHEMA_SHA256 = {
-  analyze_image_prompt: '107199c3e83a142002b8c988dbb3e9aea8aa48b7f6867c6b1243f60872665f21',
+  // 2026-11-08 有意更新：include_ir 的描述改成「调试用」，并把工具描述里
+  // 「两个正稿字段并列返回」的旧说法换掉。属性名、枚举、required 全部未动。
+  // 2026-11-09 有意更新：示例档案名 animagine-xl-4.0 → anima（同一份档案改名，
+  // 旧名登记为别名）。属性名、枚举、required 仍未动。
+  analyze_image_prompt: 'f942f2f177fcf0ebd5ef049d1f261afebeee666f2ef925ac8462c023d7e0ee6a',
   validate_configs: 'c288b8347979e39b2eb3083e661c81f2e2555e3bfac948a13bc2834be17c2801',
   diagnose_knowledge_base: 'e366cbd5fddf761a42b34d27b790d867e8f2405b0523c92eeaae536427844682',
   rebuild_knowledge_base: '562b673a7a02ee57c03e7ac880d186e3f9ccb80ce3033ae560abac6ffecba6d3',
-  preview_model_profile: 'b446c99ea4d10630dd4279abf5240fddf94aa022cb418d0cfc4b3a553834259b',
+  preview_model_profile: 'c586a1f452aa2847de89c0479db29c56d94928c480d8a5bbb712828e75974ffc',
   manage_experiences: '1f67cf58e5d0094b02ad3deaefdc27369cf07c07db4e162b493cf43868fe0a9d',
 }
 
@@ -3908,4 +3918,343 @@ test('输出被 limit 截断时，total 仍是真实总数', async () => {
   assert.equal(summary.disk_files, 5)
   assert.equal(summary.runtime_files, 5)
   await comfy.dispose()
+})
+
+// ───── PL-OUTPUT-CONTRACT：对话里只留生成需要的东西 ─────
+
+/**
+ * 一份"该有的都有"的编译结果。
+ *
+ * 故意塞满审计字段：slots / composed / fact_ledger / fidelity / coverage / stats。
+ * 这些字段真机上确实存在，只有这样才能证明它们被挡在信封外面，
+ * 而不是恰好因为没人填所以没出现。
+ */
+function envelopeInputs(overrides = {}) {
+  return {
+    taskId: 'task-1',
+    diagnostics: [],
+    profileRequest: {
+      profile: { config_id: 'illustrious', display_name: 'Illustrious' },
+      entry: { schema_version: '1.0' },
+      variant: null,
+    },
+    presetResult: { entry: { config_id: 'detail-standard', schema_version: '1.0' } },
+    snapshot: { knowledgeBase: null },
+    analysis: {
+      ir: { image: { width: 832, height: 1216, aspect_ratio: '13:19' } },
+      coverage: { ratio: 0.9 },
+      stats: { reviews_run: 0 },
+    },
+    compiled: {
+      target_profile: 'illustrious',
+      detail_level: 'detail-standard',
+      register: 'tag',
+      prompts: { positive: 'a, b, c', description: '句子版正稿', negative: 'lowres' },
+      slots: [{ id: 'subject' }],
+      quality_block: { status: 'ok' },
+      composed: { text: '成分句' },
+      keywords: ['k'],
+      keywords_detail: { k: 'v' },
+      aliases: { a: 'b' },
+      dropped: [{ term: 'x', reason: 'budget' }],
+      stats: { tags: 3 },
+      fact_ledger: { entries: [{ id: 'f1' }] },
+      fidelity: { channels: [] },
+      pose_control: { mode: 'none' },
+    },
+    knowledge: { kb: null },
+    experience: null,
+    include_ir: false,
+    ...overrides,
+  }
+}
+
+test('反推结果只留正向、反向与出图要用的信息，审计数据不再进对话', () => {
+  const result = buildAnalysisEnvelope(envelopeInputs())
+
+  assert.deepEqual(Object.keys(result.result).sort(), ['image', 'prompt_style', 'prompts', 'target_profile'])
+  assert.equal(result.result.prompts.positive, 'a, b, c')
+  assert.equal(result.result.prompts.negative, 'lowres')
+  // 描述版不再并列返回：档案决定哪版是正稿，另一版留在 trace 里。
+  assert.equal(Object.hasOwn(result.result.prompts, 'description'), false)
+  assert.equal(result.result.prompt_style, 'tag')
+  assert.deepEqual(result.result.image, { width: 832, height: 1216, aspect_ratio: '13:19' })
+  // pose_control.mode 是 none 时不出现：没交给控制网，就没有权重可带。
+  assert.equal(Object.hasOwn(result.result, 'pose_control'), false)
+
+  const serialized = JSON.stringify(result)
+  for (const key of ['slots', 'quality_block', 'composed', 'fact_ledger', 'fidelity', 'coverage', 'dropped', 'keywords', 'stats', 'plugin_version', 'detail_level', 'knowledge_base_used', 'trace']) {
+    assert.equal(serialized.includes(`"${key}"`), false, `返回里还留着 ${key}`)
+  }
+})
+
+test('INFO 级诊断留在 trace，只有 warning 与 error 进对话', () => {
+  const base = { config_file: null, field_path: null, message: 'm', suggested_fix: null }
+  const result = buildAnalysisEnvelope(
+    envelopeInputs({
+      diagnostics: [
+        { ...base, error_code: 'PIPELINE_PREVIEW_DEMO_IR', severity: 'info' },
+        { ...base, error_code: 'PIPELINE_PRESET_FALLBACK', severity: 'warning' },
+      ],
+    }),
+  )
+
+  assert.equal(result.diagnostics.length, 1)
+  assert.equal(result.diagnostics[0].error_code, 'PIPELINE_PRESET_FALLBACK')
+  assert.equal(result.status, 'ok_with_warnings')
+})
+
+test('状态仍按全量诊断判定：只有 INFO 时是 ok，有 error 时是 failed', () => {
+  const base = { config_file: null, field_path: null, message: 'm', suggested_fix: null }
+  const onlyInfo = buildAnalysisEnvelope(
+    envelopeInputs({ diagnostics: [{ ...base, error_code: 'PIPELINE_PREVIEW_DEMO_IR', severity: 'info' }] }),
+  )
+  // INFO 被挡在对话外面，但"这次运行是好的"这个结论不能因此变成"有问题"。
+  assert.equal(onlyInfo.diagnostics.length, 0)
+  assert.equal(onlyInfo.status, 'ok')
+
+  const withError = buildAnalysisEnvelope(
+    envelopeInputs({ diagnostics: [{ ...base, error_code: 'PIPELINE_NO_PROFILE', severity: 'error' }] }),
+  )
+  assert.equal(withError.status, 'failed')
+  assert.equal(withError.diagnostics.length, 1)
+})
+
+test('描述档档案给 prompt_style: prose，标签档给 tag', () => {
+  const prose = buildAnalysisEnvelope(
+    envelopeInputs({ compiled: { ...envelopeInputs().compiled, register: 'clause', prompts: { positive: '一整句自然语言。', negative: '' } } }),
+  )
+  assert.equal(prose.result.prompt_style, 'prose')
+  assert.equal(prose.result.prompts.positive, '一整句自然语言。')
+  assert.equal(prose.result.prompts.negative, '')
+
+  const tag = buildAnalysisEnvelope(envelopeInputs())
+  assert.equal(tag.result.prompt_style, 'tag')
+})
+
+test('完整 IR 只有显式要求时才跟着返回，默认不给', () => {
+  const withIr = buildAnalysisEnvelope(envelopeInputs({ include_ir: true }))
+  assert.deepEqual(withIr.result.ir, { image: { width: 832, height: 1216, aspect_ratio: '13:19' } })
+
+  const withoutIr = buildAnalysisEnvelope(envelopeInputs({ include_ir: false }))
+  assert.equal(Object.hasOwn(withoutIr.result, 'ir'), false)
+})
+
+test('从对话里拿掉的四段审计数据，仍然完整写进本地 trace', () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'dsh-trace-'))
+  const base = { config_file: null, field_path: null, message: 'm', suggested_fix: null }
+  try {
+    const inputs = envelopeInputs({
+      taskId: 'trace-task-1',
+      diagnostics: [
+        { ...base, error_code: 'PIPELINE_PREVIEW_DEMO_IR', severity: 'info' },
+        { ...base, error_code: 'PIPELINE_PRESET_FALLBACK', severity: 'warning' },
+      ],
+    })
+    const summary = traceStage({
+      runtime: { pluginConfig: { trace: { enabled: true, max_tasks: 10 } }, dirs: { dataDir } },
+      taskId: inputs.taskId,
+      analysis: inputs.analysis,
+      compiled: inputs.compiled,
+      profileRequest: inputs.profileRequest,
+      presetResult: inputs.presetResult,
+      snapshot: inputs.snapshot,
+      knowledge: inputs.knowledge,
+      diagnostics: inputs.diagnostics,
+    })
+
+    const dir = join(dataDir, 'traces', 'trace-task-1')
+    const read = (name) => JSON.parse(readFileSync(join(dir, `${name}.json`), 'utf8'))
+
+    // 四段新留痕都在，且内容是完整的那一份，不是被裁过的。
+    const audit = read(TRACE_STAGES.COMPILE_AUDIT)
+    assert.equal(audit.slots.length, 1)
+    assert.equal(audit.composed.text, '成分句')
+    assert.equal(audit.prompts.description, '句子版正稿')
+    assert.equal(read(TRACE_STAGES.FIDELITY).channels.length, 0)
+    const coverage = read(TRACE_STAGES.COVERAGE)
+    assert.equal(coverage.coverage.ratio, 0.9)
+    assert.deepEqual(coverage.stats.compile, { tags: 3 })
+    // 诊断存全量：INFO 也在，因为"没交给 Agent"不等于"没发生"。
+    const diag = read(TRACE_STAGES.DIAGNOSTICS)
+    assert.equal(diag.length, 2)
+    assert.equal(diag[0].severity, 'info')
+
+    assert.ok(summary.captured.includes(TRACE_STAGES.COMPILE_AUDIT))
+    assert.ok(summary.captured.includes(TRACE_STAGES.DIAGNOSTICS))
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+// ───── ANIMA-PROFILE-MIGRATION：改名不该让已有引用失效 ─────
+//
+// animagine-xl-4.0 是本项目最初给 Anima 起错的名称，已迁成 anima。
+// 这几项钉的是「迁移之后旧写法还能用、两份档案互不干扰、正稿形态各自正确」。
+
+/** 用真实的 configs/ 加载一次配置仓库；dataDir 用临时目录，避免读到本机用户覆盖。 */
+async function loadRealConfigStore() {
+  const dataDir = mkdtempSync(join(tmpdir(), 'dsh-profiles-'))
+  const store = createConfigStore({ configDir: join(PACKAGE_DIR, 'configs'), dataDir, logger: null })
+  const loaded = await store.get()
+  return { store, loaded, dataDir }
+}
+
+test('anima 档案能加载，正向正稿走自然语言描述版', async () => {
+  const { store, loaded, dataDir } = await loadRealConfigStore()
+  try {
+    const entry = store.getModelProfile('anima')
+    assert.ok(entry, 'anima 档案没加载出来')
+    assert.equal(entry.config.config_id, 'anima')
+    assert.equal(entry.config.tag_standard.word_style, 'prose')
+
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const compiled = await compilePrompt({ ir, profile: entry.config, includeNegative: true })
+    // prose 档的正稿就是成分句本身：register 记 clause，正稿与描述版逐字相同。
+    assert.equal(compiled.register, 'clause')
+    assert.equal(compiled.prompts.positive, compiled.prompts.description)
+    assert.ok(compiled.prompts.positive.length > 0)
+    // 反向提示词仍走档案里的 negative 机制，不是空串。
+    assert.ok(compiled.prompts.negative.length > 0)
+
+    const errors = loaded.diagnostics.filter((item) => item.severity === 'error')
+    assert.deepEqual(errors, [], `加载 anima 时出现 error：${errors.map((item) => item.message).join('；')}`)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('AnimaImage 与 animagine-xl-4.0 都归一为 anima，不另立档案', async () => {
+  const { store, dataDir } = await loadRealConfigStore()
+  try {
+    const ids = store.listModelProfileIds().map((item) => item.config_id).sort()
+    // 只有两份档案：改名不能变成"新旧各一份"。
+    assert.deepEqual(ids, ['anima', 'illustrious'])
+
+    for (const name of ['anima', 'AnimaImage', 'animagine-xl-4.0', 'ANIMAGINE-XL-4.0', 'animagine_xl_4_0']) {
+      const entry = store.getModelProfile(name)
+      assert.ok(entry, `${name} 没有解析到任何档案`)
+      assert.equal(entry.config.config_id, 'anima', `${name} 解析到了 ${entry.config.config_id}`)
+    }
+
+    // 别名解析走的是真实的 resolveProfileRequest，不是直接查 Map。
+    const resolved = resolveProfileRequest(store, { profile_id: 'AnimaImage' })
+    assert.equal(resolved.entry?.config_id, 'anima')
+    assert.equal(resolved.profile?.tag_standard?.word_style, 'prose')
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('illustrious 仍是标签档，和 anima 互不干扰', async () => {
+  const { store, dataDir } = await loadRealConfigStore()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const anima = store.getModelProfile('anima')
+    const illustrious = store.getModelProfile('illustrious')
+    assert.ok(anima && illustrious)
+
+    const animaOut = await compilePrompt({ ir, profile: anima.config, includeNegative: true })
+    const illustriousOut = await compilePrompt({ ir, profile: illustrious.config, includeNegative: true })
+
+    assert.equal(animaOut.register, 'clause')
+    assert.equal(illustriousOut.register, 'tag')
+    // 标签档的正稿与描述版是两段不同的文本，不能被 prose 档带着走。
+    assert.notEqual(illustriousOut.prompts.positive, illustriousOut.prompts.description)
+    // 两份档案的负向词表本就不同（anima 18 条 / illustrious 11 条），
+    // 如果谁读到了对方的档案，这条会立刻断。
+    assert.notEqual(animaOut.prompts.negative, illustriousOut.prompts.negative)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('档案目录里没有第二份 anima，旧文件名已不在', () => {
+  const files = readdirSync(join(PACKAGE_DIR, 'configs/model-profiles')).sort()
+  assert.deepEqual(files, ['anima.json', 'illustrious.json'])
+})
+
+// ───── 改名之后，历史记录仍然查得到 ─────
+//
+// 经验库里存的是编译时的 target_profile 原值。档案从 animagine-xl-4.0 改名成 anima 之后，
+// 旧记录里那一列不会跟着变——所以查询必须按"这个档案用过的所有名字"去筛。
+
+/** 造一个只含经验表的临时库，插两行：一行旧名、一行新名。 */
+async function tempExperienceDb() {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-exp-'))
+  const handle = await openKnowledgeDatabase({ path: join(dir, 'k.sqlite3'), readonly: false, createIfMissing: true })
+  const insert = (taskId, profile) => {
+    handle.run(
+      `INSERT INTO prompt_experiences (task_id, target_model, target_profile, detail_level, positive_prompt, config_version, created_at)
+       VALUES (?, ?, ?, 'standard', 'a', 'test', '2026-11-09T00:00:00.000Z')`,
+      taskId,
+      profile === 'anima' ? 'Anima' : 'Animagine XL 4.0',
+      profile,
+    )
+    const id = handle.get('SELECT id FROM prompt_experiences WHERE task_id = ?', taskId).id
+    handle.run(
+      "INSERT INTO experience_tags (experience_id, tag_text, role) VALUES (?, '1girl', 'subject')",
+      id,
+    )
+  }
+  insert('task-old', 'animagine-xl-4.0')
+  insert('task-new', 'anima')
+  return { handle, dir }
+}
+
+test('经验库按档案查询时，旧档案名与新档案名都能被筛出来', async () => {
+  const { handle, dir } = await tempExperienceDb()
+  try {
+    // 单值语义没变：只写新名就只匹配新名。
+    assert.equal(listExperiences(handle, { targetProfile: 'anima' }).length, 1)
+    assert.equal(listExperiences(handle, { targetProfile: 'animagine-xl-4.0' }).length, 1)
+
+    // 展开成一组名字之后，改名前后两条都在。
+    const names = ['anima', 'animagine-xl-4.0', 'AnimaImage']
+    assert.equal(listExperiences(handle, { targetProfiles: names }).length, 2)
+
+    const stats = experienceStats(handle, { targetProfiles: names })
+    assert.equal(stats.total, 2)
+    assert.equal(stats.tags, 2)
+
+    const found = searchExperiences(handle, { tags: ['1girl'], targetProfiles: names })
+    assert.equal(found.length, 2)
+  } finally {
+    try {
+      handle.close?.()
+    } catch {}
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('manage_experiences 收到新档案名时，自动把旧名一起查', async () => {
+  const { handle, dir } = await tempExperienceDb()
+  try {
+    const { store, dataDir } = await loadRealConfigStore()
+    try {
+      const runtime = {
+        getKnowledgeBase: async () => ({ handle }),
+        getConfigStore: async () => store,
+        logger: { error() {}, warn() {}, debug() {} },
+      }
+      const result = await runManageExperiences(runtime, { action: 'list', target_profile: 'anima' })
+      assert.equal(result.status, 'ok')
+      assert.equal(result.count, 2, '按 anima 查应当同时拿到改名前的记录')
+
+      // 档案名写成旧名，展开结果里同样包含新名。
+      const legacy = await runManageExperiences(runtime, { action: 'list', target_profile: 'animagine-xl-4.0' })
+      assert.equal(legacy.count, 2)
+
+      // 不传档案时不过滤，两条都在。
+      const all = await runManageExperiences(runtime, { action: 'list' })
+      assert.equal(all.count, 2)
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  } finally {
+    try {
+      handle.close?.()
+    } catch {}
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

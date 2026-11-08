@@ -51,6 +51,17 @@ export const CONFIG_KINDS = Object.freeze({
   },
 })
 
+/**
+ * 档案名的松匹配键：小写，去掉 - _ . 与空白。
+ * 只用于「精确别名找不到时再试一次」，不改变 config_id 的精确匹配语义。
+ */
+export function looseAliasKey(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[-_.\s]+/g, '')
+}
+
 export function deepFreeze(value) {
   if (value === null || typeof value !== 'object') return value
   if (Object.isFrozen(value)) return value
@@ -187,7 +198,7 @@ async function loadKind({ kind, configDir, dataDir, logger, knownPresetIds = nul
         config_file: candidate.relative,
         field_path: '/schema_version',
         message: '这份模型档案是 schema 1.0 结构，已不再支持；当前版本的标签标准是 2.0（tag_standard）。',
-        suggested_fix: '把档案改写成 2.0 结构；新档案可直接参考 illustrious / animagine-xl-4.0。',
+        suggested_fix: '把档案改写成 2.0 结构；新档案可直接参考 illustrious / anima。',
       })
       diagnostics.push(unsupported)
       rejected.push(rejectedEntry({ kind, candidate, document: read.value, diagnostics: [unsupported] }))
@@ -450,6 +461,18 @@ export function createConfigStore({ configDir, dataDir, logger }) {
     const presetMap = new Map(presets.entries.map((entry) => [entry.config_id, entry]))
 
     const modelAliasIndex = new Map()
+    // 分隔符变体（anima_image / Anima-Image / ANIMA.IMAGE）不该逼着每份档案把排列组合抄一遍：
+    // 精确别名找不到时，再按「小写 + 去掉 - _ . 空白」的松匹配查一次。
+    // 两个档案松匹配撞在一起时两边都不登记——宁可报找不到，也不替用户猜是哪一个。
+    const looseIndex = new Map()
+    const looseConflicts = new Set()
+    for (const configId of modelProfiles.keys()) {
+      const loose = looseAliasKey(configId)
+      if (loose === '') continue
+      const owner = looseIndex.get(loose)
+      if (owner !== undefined && owner !== configId) looseConflicts.add(loose)
+      else looseIndex.set(loose, configId)
+    }
     for (const entry of modelProfiles.values()) {
       for (const alias of Array.isArray(entry.config?.aliases) ? entry.config.aliases : []) {
         if (typeof alias !== 'string' || alias.trim() === '') continue
@@ -468,7 +491,28 @@ export function createConfigStore({ configDir, dataDir, logger }) {
           continue
         }
         modelAliasIndex.set(key, entry.config_id)
+        const loose = looseAliasKey(key)
+        if (loose === '') continue
+        const owner = looseIndex.get(loose)
+        if (owner !== undefined && owner !== entry.config_id) {
+          looseConflicts.add(loose)
+          continue
+        }
+        looseIndex.set(loose, entry.config_id)
       }
+    }
+    for (const key of looseConflicts) {
+      looseIndex.delete(key)
+      diagnostics.push(
+        diagnostic({
+          error_code: LOADER_CODES.MODEL_PROFILE_ALIAS_AMBIGUOUS,
+          severity: SEVERITY.WARNING,
+          config_file: 'configs/model-profiles',
+          field_path: '/aliases',
+          message: `有多个档案的别名在忽略大小写与 - _ . 空白后都变成 ${key}，这类写法按别名查找时不会被解析。`,
+          suggested_fix: '把其中一个别名改得能区分开，例如带上模型版本号。',
+        }),
+      )
     }
 
     if (knowledgeBase === null) {
@@ -488,6 +532,7 @@ export function createConfigStore({ configDir, dataDir, logger }) {
       modelProfiles,
       presets: presetMap,
       modelAliasIndex,
+      modelAliasLooseIndex: looseIndex,
       rejected,
       schemas: { 'knowledge-base': kb.schema, 'model-profile': profiles.schema, preset: presets.schema },
       diagnostics,
@@ -537,10 +582,14 @@ export function createConfigStore({ configDir, dataDir, logger }) {
     },
     getModelProfile(idOrAlias) {
       if (typeof idOrAlias !== 'string' || idOrAlias === '') return null
-      const direct = assertLoaded().modelProfiles.get(idOrAlias)
+      const data = assertLoaded()
+      const direct = data.modelProfiles.get(idOrAlias)
       if (direct) return direct
-      const resolved = loaded.modelAliasIndex.get(idOrAlias.trim().toLowerCase())
-      return resolved ? (loaded.modelProfiles.get(resolved) ?? null) : null
+      const resolved = data.modelAliasIndex.get(idOrAlias.trim().toLowerCase())
+      if (resolved) return data.modelProfiles.get(resolved) ?? null
+      // 最后再试一次忽略大小写与分隔符的写法：anima_image / Anima-Image / ANIMAGINE_XL_4.0。
+      const loose = data.modelAliasLooseIndex?.get(looseAliasKey(idOrAlias))
+      return loose ? (data.modelProfiles.get(loose) ?? null) : null
     },
     listModelProfileIds() {
       const data = assertLoaded()

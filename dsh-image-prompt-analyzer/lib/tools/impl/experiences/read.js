@@ -13,13 +13,17 @@ import {
 import { missingId } from './common.js'
 
 export function runReadAction(handle, action, args, diagnostics) {
+  // args.target_profile 已经由上层展开成 target_profile_aliases（含档案的所有旧名）。
+  // 旧记录里存的是改名前的 config_id，只按新名查会全部漏掉。
+  const targetProfiles = Array.isArray(args.target_profile_aliases) ? args.target_profile_aliases : null
+
   if (action === 'stats') {
     return envelope({
       status: TASK_STATUS.OK,
       diagnostics,
       extra: {
         action,
-        stats: experienceStats(handle, { targetProfile: args.target_profile ?? null }),
+        stats: experienceStats(handle, { targetProfile: args.target_profile ?? null, targetProfiles }),
         by_profile: statsByProfile(handle),
       },
     })
@@ -30,6 +34,7 @@ export function runReadAction(handle, action, args, diagnostics) {
       limit: args.limit ?? 20,
       targetModel: args.target_model ?? null,
       targetProfile: args.target_profile ?? null,
+      targetProfiles,
       imageHash: args.image_hash ?? null,
     })
     return envelope({
@@ -49,6 +54,7 @@ export function runReadAction(handle, action, args, diagnostics) {
       tags,
       targetModel: args.target_model ?? null,
       targetProfile: args.target_profile ?? null,
+      targetProfiles,
       limit: args.limit ?? 10,
       requireAll: args.require_all === true,
     })

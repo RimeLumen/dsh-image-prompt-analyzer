@@ -1,16 +1,18 @@
 {
   "schema_version": "2.0",
-  "config_id": "animagine-xl-4.0",
+  "config_id": "anima",
   "kind": "model_profile",
-  "display_name": "Animagine XL 4.0",
+  "display_name": "Anima",
   "aliases": [
+    "animagine-xl-4.0",
+    "AnimaImage",
     "animagine",
     "animagine-xl"
   ],
   "variant": "base",
   "tag_standard": {
-    "family": "animagine",
-    "word_style": "hybrid",
+    "family": "anima",
+    "word_style": "prose",
     "slot_order": [
       "count",
       "character",
@@ -143,8 +145,8 @@
     ],
     "source_confidence": {
       "level": "A",
-      "source": "Animagine XL 4.0 官方 Model Card 与 CagliostroLab 发布公告",
-      "note": "官方明确槽位顺序、质量/评分词与 rating 建议；CFG 有博客 5–7/6 与模型卡 4–7/5 两版，README 参考表并列不取单一值"
+      "source": "Anima 官方 Model Card 与 CagliostroLab 发布公告（旧称 Animagine XL 4.0）",
+      "note": "官方明确槽位顺序、质量/评分词与 rating 建议；CFG 有博客 5–7/6 与模型卡 4–7/5 两版，README 参考表并列不取单一值。word_style 按本项目约定设为 prose：正向走自然语言描述版，标签版仍留在 slots 里供回查"
     }
   },
   "tag_mapping": {

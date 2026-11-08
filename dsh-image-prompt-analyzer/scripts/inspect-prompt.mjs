@@ -13,7 +13,7 @@
  * 这里能回答的只有：成品文本变没变、某条观察进了哪个通道、没进的理由是什么。
  */
 
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -119,6 +119,35 @@ function readJson(path, label) {
  * 如实记成 kb_health.unavailable，而空壳对象会被读成「查了但都没命中」——
  * 那是两件完全不同的事。
  */
+/**
+ * 按档案名找文件：先按文件名直找，找不到再按 aliases 反查。
+ * 旧名（animagine-xl-4.0 / AnimaImage）在档案的 aliases 里登记过，
+ * 所以命令行里用旧名照样能跑——改名不该让旧的检查命令失效。
+ */
+function resolveProfileFile(profileId) {
+  const direct = resolveFromPackage(`configs/model-profiles/${profileId}.json`)
+  if (existsSync(direct)) return { path: direct, requested: profileId, config_id: null }
+  const dir = resolveFromPackage('configs/model-profiles')
+  const wanted = profileId.trim().toLowerCase().replace(/[-_.\s]+/g, '')
+  if (existsSync(dir)) {
+    for (const name of readdirSync(dir).filter((item) => item.toLowerCase().endsWith('.json')).sort()) {
+      const candidate = join(dir, name)
+      let document
+      try {
+        document = JSON.parse(readFileSync(candidate, 'utf8'))
+      } catch {
+        continue
+      }
+      const aliases = Array.isArray(document?.aliases) ? document.aliases : []
+      const hit = [document?.config_id, ...aliases].some(
+        (item) => typeof item === 'string' && item.trim().toLowerCase().replace(/[-_.\s]+/g, '') === wanted,
+      )
+      if (hit) return { path: candidate, requested: profileId, config_id: document?.config_id ?? null }
+    }
+  }
+  throw new Error(`找不到模型档案 ${profileId}：configs/model-profiles/ 下既没有同名文件，也没有哪份档案把它登记为别名。`)
+}
+
 async function prepare(args) {
   if (!args.ir || args.ir === true) {
     throw new Error('缺少 --ir PATH。要编译的 IR 是必填项。')
@@ -129,7 +158,8 @@ async function prepare(args) {
 
   const profileId = String(args.profile ?? 'illustrious')
   const presetId = String(args.preset ?? 'detail-standard')
-  const profile = readJson(resolveFromPackage(`configs/model-profiles/${profileId}.json`), `模型档案 ${profileId}`)
+  const profileFile = resolveProfileFile(profileId)
+  const profile = readJson(profileFile.path, `模型档案 ${profileId}`)
   const preset = readJson(resolveFromPackage(`configs/presets/${presetId}.json`), `预设 ${presetId}`)
 
   let kb = null

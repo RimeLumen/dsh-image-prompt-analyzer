@@ -2,7 +2,7 @@
 import { PLUGIN_VERSION } from '../version.js'
 import { readdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { SEVERITY, diagnostic, envelope, topStackFrame } from '../diagnostics.js'
+import { SEVERITY, deriveStatus, diagnostic, envelope, topStackFrame } from '../diagnostics.js'
 import { IR_SCHEMA_VERSION } from '../ir/index.js'
 import { analyzeVision } from '../vision/index.js'
 import { COMPILE_SCHEMA_VERSION, auditFidelity, compilePrompt } from '../compile/index.js'
@@ -116,7 +116,17 @@ export async function runVisionStage({
  *
  * 它不参与提示词生成，写盘失败也绝不能把分析搞挂。
  */
-export function traceStage({ runtime, taskId, analysis, compiled, profileRequest, presetResult, snapshot, knowledge }) {
+export function traceStage({
+  runtime,
+  taskId,
+  analysis,
+  compiled,
+  profileRequest,
+  presetResult,
+  snapshot,
+  knowledge,
+  diagnostics = [],
+}) {
   const settings = runtime.pluginConfig?.trace ?? {}
   if (settings.enabled === false) return null
   const baseDir = runtime.dirs?.dataDir
@@ -204,6 +214,56 @@ export function traceStage({ runtime, taskId, analysis, compiled, profileRequest
     trace.capture(TRACE_STAGES.FACT_LEDGER, compiled.fact_ledger)
   } else {
     trace.missing(TRACE_STAGES.FACT_LEDGER, '没有事实台账，无法回答某条观察在哪一步改变或消失。')
+  }
+
+  // 工具默认返回里已经没有这几段了，它们必须落在这里，否则就真的丢了。
+  if (compiled) {
+    trace.capture(TRACE_STAGES.COMPILE_AUDIT, {
+      target_profile: compiled.target_profile ?? null,
+      detail_level: compiled.detail_level ?? null,
+      register: compiled.register ?? null,
+      // 两版都存：档案决定哪版是正稿，但"另一版长什么样"是事后对账的依据。
+      prompts: {
+        positive: compiled.prompts?.positive ?? null,
+        description: compiled.prompts?.description ?? null,
+        negative: compiled.prompts?.negative ?? null,
+      },
+      description_candidate: compiled.description_candidate ?? null,
+      description_source_refs: compiled.description_source_refs ?? null,
+      composed: compiled.composed ?? null,
+      slots: compiled.slots ?? null,
+      quality_block: compiled.quality_block ?? null,
+      keywords: compiled.keywords ?? null,
+      keywords_detail: compiled.keywords_detail ?? null,
+      aliases: compiled.aliases ?? null,
+      dropped: compiled.dropped ?? null,
+      kb_health: compiled.kb_health ?? null,
+      pose_control: compiled.pose_control ?? null,
+    })
+  } else {
+    trace.missing(TRACE_STAGES.COMPILE_AUDIT, '编译没有产出结果，没有可留的槽位与成分句。')
+  }
+
+  if (compiled?.fidelity) {
+    trace.capture(TRACE_STAGES.FIDELITY, compiled.fidelity)
+  } else {
+    trace.missing(TRACE_STAGES.FIDELITY, '没有还原审计结果。')
+  }
+
+  if (analysis) {
+    trace.capture(TRACE_STAGES.COVERAGE, {
+      coverage: analysis.coverage ?? null,
+      stats: { ...(analysis.stats ?? {}), compile: compiled?.stats ?? null },
+    })
+  } else {
+    trace.missing(TRACE_STAGES.COVERAGE, '分析未完成，没有覆盖率与统计。')
+  }
+
+  // 全量诊断（含 INFO）。工具只把 warning / error 交出去，INFO 留在这里。
+  if (Array.isArray(diagnostics) && diagnostics.length > 0) {
+    trace.capture(TRACE_STAGES.DIAGNOSTICS, diagnostics)
+  } else {
+    trace.missing(TRACE_STAGES.DIAGNOSTICS, '这次分析没有产生任何诊断。')
   }
 
   const rootDir = join(baseDir, 'traces')
@@ -326,6 +386,17 @@ export async function saveExperienceStage({
   }
 }
 
+/**
+ * 交给 Agent 的结果。
+ *
+ * 只要三样东西：这一版正稿（按档案只给一种写法）、抑制词、出图需要的路由信息。
+ * 槽位明细、成分句、事实台账、还原审计、覆盖率、统计这些是**分析过程**，
+ * 不是**生成输入**——它们留在 data/traces/<task_id>/ 里，事后照样能查，
+ * 但不再默认占掉对话上下文。
+ *
+ * 诊断按可操作性过滤：warning / error 是"这次结果可能不对"，必须交给 Agent；
+ * info 是"编译器做了这样一件事"，写完 trace 就够了。
+ */
 export function buildAnalysisEnvelope({
   taskId,
   diagnostics,
@@ -336,12 +407,17 @@ export function buildAnalysisEnvelope({
   compiled,
   knowledge,
   experience,
-  trace = null,
   include_ir = true,
 }) {
+  const all = Array.isArray(diagnostics) ? diagnostics : []
+  const actionable = all.filter((item) => item?.severity !== SEVERITY.INFO)
+  const image = analysis?.ir?.image ?? null
+
   return envelope({
+    // 状态仍按全量诊断判定：INFO 被藏起来不等于这次运行没有问题。
+    status: deriveStatus(all),
     task_id: taskId,
-    diagnostics,
+    diagnostics: actionable,
     active_configs: {
       knowledge_base: snapshot.knowledgeBase
         ? { config_id: snapshot.knowledgeBase.config_id, schema_version: snapshot.knowledgeBase.schema_version }
@@ -350,29 +426,23 @@ export function buildAnalysisEnvelope({
     },
     extra: {
       result: {
-        task_id: taskId,
-        plugin_version: PLUGIN_VERSION,
-        target_profile: compiled.target_profile,
-        detail_level: compiled.detail_level,
-        image: analysis.ir.image,
-        prompts: compiled.prompts,
-        composed: compiled.composed ?? null,
-        slots: compiled.slots,
-        quality_block: compiled.quality_block,
-        pose_control: compiled.pose_control ?? null,
-        keywords: compiled.keywords ?? [],
-        coverage: analysis.coverage ?? null,
-        fidelity: compiled.fidelity ?? null,
-        // 事实台账：每条观察的来源、被谁改写、在哪一步丢掉、最终进了哪个通道。
-        // 它和 fidelity 是两个东西：fidelity 只答"原话还在不在"，台账答"在哪一步变的"。
-        fact_ledger: compiled.fact_ledger ?? null,
-        // 阶段产物清单：哪几段抓到了、哪几段拿不到以及为什么。
-        trace: trace ?? null,
-        dropped: compiled.dropped,
-        knowledge_base_used: knowledge.kb !== null,
-        experience,
-        ...(include_ir ? { ir: analysis.ir } : {}),
-        stats: { ...analysis.stats, compile: compiled.stats },
+        target_profile: compiled.target_profile ?? null,
+        // clause = 档案要句子，tag = 档案要标签。Agent 据此决定怎么交给下游模型。
+        prompt_style: compiled.register === 'clause' ? 'prose' : 'tag',
+        // 出图要用的尺寸：不给出图，Agent 还得再问一次原图多大。
+        image: image
+          ? { width: image.width ?? null, height: image.height ?? null, aspect_ratio: image.aspect_ratio ?? null }
+          : null,
+        prompts: {
+          positive: compiled.prompts?.positive ?? '',
+          negative: compiled.prompts?.negative ?? '',
+        },
+        // 只有真的交给控制网时才出现：那时权重与区间建议是必须带出去的参数。
+        ...(compiled.pose_control && compiled.pose_control.mode && compiled.pose_control.mode !== 'none'
+          ? { pose_control: compiled.pose_control }
+          : {}),
+        // 调试逃生口：显式要求时才把整份 IR 带出去。
+        ...(include_ir ? { ir: analysis?.ir ?? null } : {}),
       },
     },
   })

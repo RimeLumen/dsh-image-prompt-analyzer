@@ -345,16 +345,35 @@ export function findByTaskId(handle, taskId) {
   return hydrateExperience(row, tagsFor(handle, [row.id]).get(row.id) ?? [])
 }
 
-export function listExperiences(handle, { limit = 20, targetModel = null, targetProfile = null, imageHash = null } = {}) {
+/**
+ * 档案筛选值：单值、数组都给，去重去空。
+ * 为什么不止一个值：档案改过名（animagine-xl-4.0 → anima），旧记录里存的还是旧名。
+ * 只按新名查会把它们全部漏掉，而"改个名字导致历史记录查不到"不是用户该承担的代价。
+ */
+function profileFilterValues(targetProfile, targetProfiles) {
+  const source = Array.isArray(targetProfiles) && targetProfiles.length > 0 ? targetProfiles : [targetProfile]
+  const values = []
+  for (const item of source) {
+    const text = asText(item)
+    if (text && !values.includes(text)) values.push(text)
+  }
+  return values
+}
+
+export function listExperiences(
+  handle,
+  { limit = 20, targetModel = null, targetProfile = null, targetProfiles = null, imageHash = null } = {},
+) {
   const clauses = []
   const params = []
   if (targetModel) {
     clauses.push('target_model = ?')
     params.push(targetModel)
   }
-  if (targetProfile) {
-    clauses.push('target_profile = ?')
-    params.push(targetProfile)
+  const profiles = profileFilterValues(targetProfile, targetProfiles)
+  if (profiles.length > 0) {
+    clauses.push(`target_profile IN (${profiles.map(() => '?').join(', ')})`)
+    params.push(...profiles)
   }
   if (imageHash) {
     clauses.push('image_hash = ?')
@@ -372,7 +391,7 @@ export function listExperiences(handle, { limit = 20, targetModel = null, target
 
 export function searchExperiences(
   handle,
-  { tags = [], targetModel = null, targetProfile = null, limit = 10, requireAll = false } = {},
+  { tags = [], targetModel = null, targetProfile = null, targetProfiles = null, limit = 10, requireAll = false } = {},
 ) {
   const wanted = []
   const seen = new Set()
@@ -389,9 +408,10 @@ export function searchExperiences(
   const placeholders = wanted.map(() => '?').join(', ')
   const params = wanted.map((text) => normalizeTagName(text))
   const modelClause = targetModel ? 'AND e.target_model = ?' : ''
-  const profileClause = targetProfile ? 'AND e.target_profile = ?' : ''
+  const profiles = profileFilterValues(targetProfile, targetProfiles)
+  const profileClause = profiles.length > 0 ? `AND e.target_profile IN (${profiles.map(() => '?').join(', ')})` : ''
   if (targetModel) params.push(targetModel)
-  if (targetProfile) params.push(targetProfile)
+  if (profiles.length > 0) params.push(...profiles)
 
   const having = requireAll ? 'HAVING matched = ?' : ''
   if (requireAll) params.push(wanted.length)
@@ -468,21 +488,23 @@ export function setEffectRating(handle, id, { rating, note = null } = {}) {
   return { id: Number(id), effect_rating: numeric }
 }
 
-export function experienceStats(handle, { targetProfile = null } = {}) {
-  const filter = targetProfile ? 'WHERE target_profile = ?' : ''
-  const params = targetProfile ? [targetProfile] : []
+export function experienceStats(handle, { targetProfile = null, targetProfiles = null } = {}) {
+  const profiles = profileFilterValues(targetProfile, targetProfiles)
+  const inList = profiles.length > 0 ? `(${profiles.map(() => '?').join(', ')})` : null
+  const filter = inList ? `WHERE target_profile IN ${inList}` : ''
+  const params = inList ? [...profiles] : []
   const total = Number(handle.get(`SELECT COUNT(*) AS n FROM prompt_experiences ${filter}`, ...params)?.n ?? 0)
   const tags = Number(
-    targetProfile
+    inList
       ? handle.get(
-          'SELECT COUNT(*) AS n FROM experience_tags t JOIN prompt_experiences e ON e.id = t.experience_id WHERE e.target_profile = ?',
-          targetProfile,
+          `SELECT COUNT(*) AS n FROM experience_tags t JOIN prompt_experiences e ON e.id = t.experience_id WHERE e.target_profile IN ${inList}`,
+          ...params,
         )?.n
       : handle.get('SELECT COUNT(*) AS n FROM experience_tags')?.n ?? 0,
   )
   const rated = Number(
     handle.get(
-      `SELECT COUNT(*) AS n FROM prompt_experiences ${targetProfile ? 'WHERE target_profile = ? AND' : 'WHERE'} effect_rating IS NOT NULL`,
+      `SELECT COUNT(*) AS n FROM prompt_experiences ${inList ? `WHERE target_profile IN ${inList} AND` : 'WHERE'} effect_rating IS NOT NULL`,
       ...params,
     )?.n ?? 0,
   )
