@@ -5,6 +5,10 @@ import { COMFY_CODES, ComfyError } from './errors.js'
 // 这里只声明"我们能安全读写哪些字段"。
 export const SUPPORTED_NODES = Object.freeze({
   CheckpointLoaderSimple: { fields: ['ckpt_name'], writable: ['ckpt_name'] },
+  // UNET 与 CLIP 分开加载是 Flux / SD3 一类的常规做法，
+  // 只认 CheckpointLoaderSimple 会让这些工作流整份被判成"不支持"。
+  UNETLoader: { fields: ['unet_name', 'weight_dtype'], writable: ['unet_name', 'weight_dtype'] },
+  CLIPLoader: { fields: ['clip_name', 'type'], writable: ['clip_name', 'type'] },
   LoraLoader: { fields: ['lora_name', 'strength_model', 'strength_clip'], writable: ['lora_name', 'strength_model', 'strength_clip'] },
   VAELoader: { fields: ['vae_name'], writable: ['vae_name'] },
   CLIPTextEncode: { fields: ['text'], writable: ['text'] },

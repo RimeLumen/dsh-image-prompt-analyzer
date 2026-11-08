@@ -6,6 +6,8 @@ import { KNOWN_MODEL_EXTENSIONS, extensionOf } from './catalog.js'
 import { CATEGORY_LOADERS, filterByStates, reconcileModels } from './reconcile.js'
 import { inspectWorkflow, requireApiPrompt } from './workflow.js'
 import { applyWorkflowPatch, planWorkflowPatch } from './patch.js'
+import { ROLE_VALUES, resolveSemanticChanges } from './edits.js'
+import { classesInPrompt } from './build.js'
 import { RUN_STATES } from './runs.js'
 import { LAUNCHER_ACTION_VALUES } from './launcher.js'
 
@@ -47,9 +49,14 @@ async function resolveWorkflow(rt, args, signal) {
   if (typeof args.workflow_path === 'string' && args.workflow_path !== '') {
     return readWorkflowFromPath(rt, args.workflow_path, signal)
   }
+  if (typeof args.workflow_name === 'string' && args.workflow_name.trim() !== '') {
+    // 用户只报了个名字：先在工作流目录里找，找不到会带着可用名一起报错。
+    const found = await rt.resolveLocalWorkflow(args.workflow_name.trim(), { signal })
+    return readWorkflowFromPath(rt, found.item.display_path, signal)
+  }
   throw new ComfyError(
     COMFY_CODES.VALIDATION_FAILED,
-    '需要提供 workflow（对象）或 workflow_path（文件路径）之一。',
+    '需要提供 workflow（对象）、workflow_path（文件路径）或 workflow_name（本地工作流名）之一。',
   )
 }
 
@@ -57,8 +64,11 @@ async function resolveWorkflow(rt, args, signal) {
 const TOOL_ACTIONS = Object.freeze({
   comfyui_status: '检查连接状态',
   comfyui_list_models: '列出本地模型',
+  comfyui_list_workflows: '列出本地工作流',
   comfyui_inspect_workflow: '检查工作流',
   comfyui_plan_workflow_patch: '规划工作流补丁',
+  comfyui_build_workflow: '新建工作流',
+  comfyui_save_workflow: '保存工作流',
   comfyui_submit_workflow: '提交工作流',
   comfyui_get_job: '查询任务',
   comfyui_start: '启动或打开 ComfyUI',
@@ -67,6 +77,19 @@ const TOOL_ACTIONS = Object.freeze({
 function actionLabelOf(toolName) {
   const label = TOOL_ACTIONS[toolName]
   return typeof label === 'string' && label !== '' ? label : '该操作'
+}
+
+/**
+ * 提交之后该做什么，三种情况必须分开说。
+ * 服务端明确拒绝（rejected）是"改完可以再提一次"，说成"结果未知、请勿重复提交"
+ * 会让调用方以为队列里躺着一份任务，白白卡住。
+ */
+function nextStepFor(run) {
+  if (run?.prompt_id) return `用 comfyui_get_job 查询 ${run.prompt_id} 的执行结果。`
+  if (run?.state === RUN_STATES.FAILED && run?.error_code === COMFY_CODES.SUBMISSION_REJECTED) {
+    return 'ComfyUI 明确拒绝了这份工作流，队列里没有这次任务。按 node_errors 改完参数可以重新提交一次。'
+  }
+  return '提交结果未知，请勿重复提交；先确认 ComfyUI 队列里有没有这次任务。'
 }
 
 /**
@@ -392,6 +415,148 @@ export function createComfyToolSpecs(runtime) {
     },
 
     {
+      name: 'comfyui_list_workflows',
+      description:
+        '列出本机 ComfyUI 工作流目录里的 API 工作流文件，可按名称过滤。' +
+        '只读文件名与大小，不解析内容、不扫整个磁盘；用户只要报名字就能用，不需要上传 JSON。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: '按名称过滤，可省略扩展名，不区分大小写。' },
+          limit: { type: 'integer', minimum: 1, maximum: 200, description: '最多返回多少条，默认 30。' },
+        },
+        additionalProperties: false,
+      },
+      execute: guarded('comfyui_list_workflows', runtime, async (comfy, args) => {
+        const listing = await comfy.listLocalWorkflows({
+          signal: args.signal,
+          query: args.query,
+          limit: args.limit ?? 30,
+        })
+        return {
+          total: listing.total,
+          returned: listing.items.length,
+          match_level: listing.match_level ?? null,
+          install_root: listing.install_root,
+          roots: listing.roots.map((root) => ({
+            path: root.path,
+            source: root.root_source ?? root.source ?? null,
+            exists: root.exists !== false,
+          })),
+          workflows: listing.items.map((item) => ({
+            name: item.name,
+            directory: item.directory,
+            display_path: item.display_path,
+            root_source: item.root_source,
+            size: item.size,
+          })),
+          skipped: listing.skipped,
+          partial: listing.partial,
+          diagnostics: listing.diagnostics,
+          note: listing.total === 0 ? '这些目录里没有 .json 工作流文件。' : null,
+        }
+      }),
+    },
+
+    {
+      name: 'comfyui_build_workflow',
+      description:
+        '从零搭一份基础文生图 API 工作流，并用 ComfyUI 的真实节点定义逐项校验。' +
+        '只支持 checkpoint 与 unet 两条加载路径；模型名必须是本机真实存在的值。' +
+        '返回的工作流是本次任务的工作副本，不写文件；要留档用 comfyui_save_workflow。',
+      parameters: {
+        type: 'object',
+        properties: {
+          loader: {
+            type: 'string',
+            enum: ['checkpoint', 'unet'],
+            description: '加载路径。checkpoint 用 CheckpointLoaderSimple，unet 用 UNETLoader + CLIPLoader + VAELoader。默认 checkpoint。',
+          },
+          checkpoint: { type: 'string', description: 'loader=checkpoint 时的 ckpt_name，例如 waiIllustriousSDXL_v140.safetensors。' },
+          unet: { type: 'string', description: 'loader=unet 时的 unet_name（diffusion_models 分类）。' },
+          clip: { type: 'string', description: 'loader=unet 时的 clip_name（text_encoders 分类）。' },
+          vae: { type: 'string', description: 'loader=unet 时的 vae_name。' },
+          weight_dtype: { type: 'string', description: 'UNETLoader 的 weight_dtype，默认 default。' },
+          clip_type: { type: 'string', description: 'CLIPLoader 的 type，默认 stable_diffusion。' },
+          positive: { type: 'string', description: '正向提示词。' },
+          negative: { type: 'string', description: '反向提示词，可省略。' },
+          loras: {
+            type: 'array',
+            description: '要串进来的 LoRA，按顺序链式连接。',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                strength_model: { type: 'number' },
+                strength_clip: { type: 'number' },
+              },
+              required: ['name'],
+              additionalProperties: false,
+            },
+          },
+          steps: { type: 'integer', minimum: 1, maximum: 200 },
+          cfg: { type: 'number', minimum: 0, maximum: 100 },
+          width: { type: 'integer', minimum: 64, maximum: 4096 },
+          height: { type: 'integer', minimum: 64, maximum: 4096 },
+          batch_size: { type: 'integer', minimum: 1, maximum: 16 },
+          seed: { type: 'integer', minimum: 0 },
+          denoise: { type: 'number', minimum: 0, maximum: 1 },
+          sampler_name: { type: 'string' },
+          scheduler: { type: 'string' },
+          filename_prefix: { type: 'string' },
+        },
+        required: ['positive'],
+        additionalProperties: false,
+      },
+      execute: guarded('comfyui_build_workflow', runtime, async (comfy, args) => {
+        const built = await comfy.buildLocalWorkflow(args, { signal: args.signal })
+        return {
+          prompt: built.prompt,
+          loader: built.loader,
+          node_count: built.node_count,
+          lora_count: built.lora_count,
+          sampler_id: built.sampler_id,
+          save_id: built.save_id,
+          validation: {
+            ok: built.validation.ok,
+            problems: built.validation.problems,
+          },
+          node_definitions: {
+            requested: built.classes,
+            missing: built.missing,
+            failures: built.failures,
+          },
+          note: built.validation.ok
+            ? '工作流已按真实节点定义校验通过。要留档用 comfyui_save_workflow，要出图用 comfyui_submit_workflow。'
+            : '校验没通过，不要提交。按 problems 里的节点与字段改。',
+        }
+      }),
+    },
+
+    {
+      name: 'comfyui_save_workflow',
+      description:
+        '把一份 API 工作流另存为本地文件。只新建、不覆盖：同名文件已存在就报错。' +
+        '只能写进已配置的工作流目录（默认 ComfyUI 的 user/default/workflows）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          workflow: { type: 'object', description: 'API 格式的工作流对象。' },
+          name: { type: 'string', description: '文件名，可省略 .json；不能含路径分隔符。' },
+          directory: { type: 'string', description: '目标目录，必须是已配置的工作流根之一；省略则用默认根。' },
+        },
+        required: ['workflow', 'name'],
+        additionalProperties: false,
+      },
+      execute: guarded('comfyui_save_workflow', runtime, async (comfy, args) => comfy.saveLocalWorkflow({
+        workflow: args.workflow,
+        name: args.name,
+        directory: args.directory ?? null,
+        signal: args.signal,
+      })),
+    },
+
+    {
       name: 'comfyui_inspect_workflow',
       description:
         '读取并检查一份工作流：识别是 UI Workflow 还是 API Prompt，列出节点、输入、连接与不支持项。' +
@@ -399,8 +564,12 @@ export function createComfyToolSpecs(runtime) {
       parameters: {
         type: 'object',
         properties: {
+          workflow_name: {
+            type: 'string',
+            description: '本地工作流名称，可省略扩展名。按名称在 ComfyUI 工作流目录里查，不需要上传 JSON。',
+          },
           workflow_path: { type: 'string', description: '工作流 JSON 的绝对路径。' },
-          workflow: { type: 'object', description: '直接传入工作流对象；与 workflow_path 二选一。' },
+          workflow: { type: 'object', description: '直接传入工作流对象；与上面两项三选一。' },
         },
         additionalProperties: false,
       },
@@ -422,19 +591,34 @@ export function createComfyToolSpecs(runtime) {
       parameters: {
         type: 'object',
         properties: {
+          workflow_name: {
+            type: 'string',
+            description: '本地工作流名称，可省略扩展名。按名称在 ComfyUI 工作流目录里查。',
+          },
           workflow_path: { type: 'string', description: 'API Prompt JSON 的绝对路径。' },
-          workflow: { type: 'object', description: '直接传入 API Prompt 对象；与 workflow_path 二选一。' },
+          workflow: { type: 'object', description: '直接传入 API Prompt 对象；与上面两项三选一。' },
           changes: {
             type: 'array',
             minItems: 1,
             items: {
               type: 'object',
               properties: {
-                node_id: { type: 'string', description: '目标节点 ID。' },
-                field: { type: 'string', description: '要改的输入字段名。' },
+                role: {
+                  type: 'string',
+                  enum: ROLE_VALUES,
+                  description:
+                    '按角色定位节点：checkpoint / unet / vae / clip / lora / sampler / latent / positive / negative。' +
+                    '给了 role 就不必知道 node_id；同一角色有多个节点时会要求你指定。',
+                },
+                index: { type: 'integer', minimum: 0, description: '仅 lora：第几个 LoRA，默认 0。' },
+                node_id: { type: 'string', description: '目标节点 ID。用 role 时可省略。' },
+                field: {
+                  type: 'string',
+                  description: '要改的输入字段名。换模型时可省略（按角色取默认字段）。',
+                },
                 value: { description: '新值：数字、字符串或布尔。' },
               },
-              required: ['node_id', 'field', 'value'],
+              required: ['value'],
               additionalProperties: false,
             },
             description: '要修改的字段列表。',
@@ -446,9 +630,13 @@ export function createComfyToolSpecs(runtime) {
       execute: guarded('comfyui_plan_workflow_patch', runtime, async (comfy, args) => {
         const workflow = await resolveWorkflow(comfy, args, args.signal)
         requireApiPrompt(workflow)
-        const client = comfy.getClient()
-        const objectInfo = await client.getObjectInfo({ signal: args.signal })
-        const plan = planWorkflowPatch({ prompt: workflow, objectInfo, changes: args.changes })
+        // 语义变更先落到具体节点，再走同一套字段校验——两条路径的规则必须一致。
+        const changes = resolveSemanticChanges(workflow, args.changes)
+        // 只问这份工作流真正用到的节点定义，不拉整份 /object_info。
+        const classes = classesInPrompt(workflow)
+        const infos = await comfy.getNodeInfos(classes, { signal: args.signal })
+        const objectInfo = Object.fromEntries(infos.byClass)
+        const plan = planWorkflowPatch({ prompt: workflow, objectInfo, changes })
         return {
           workflow_id: plan.workflow_id,
           changes: plan.changes,
@@ -456,6 +644,13 @@ export function createComfyToolSpecs(runtime) {
           node_count_before: plan.node_count_before,
           node_count_after: plan.node_count_after,
           prompt: plan.prompt,
+          node_definitions: {
+            requested: classes,
+            cached: infos.hits,
+            fetched: infos.fetched,
+            missing: infos.missing,
+            failures: infos.failures,
+          },
           note: '这只是计划，尚未提交。提交请把 prompt 交给 comfyui_submit_workflow。',
         }
       }),
@@ -471,7 +666,8 @@ export function createComfyToolSpecs(runtime) {
         type: 'object',
         properties: {
           workflow: { type: 'object', description: '要提交的 API Prompt 对象。' },
-          workflow_path: { type: 'string', description: '要提交的 API Prompt 文件路径；与 workflow 二选一。' },
+          workflow_name: { type: 'string', description: '本地工作流名称，可省略扩展名。' },
+          workflow_path: { type: 'string', description: '要提交的 API Prompt 文件路径；与上面两项三选一。' },
         },
         additionalProperties: false,
       },
@@ -487,9 +683,7 @@ export function createComfyToolSpecs(runtime) {
           node_errors: run.node_errors,
           message: run.message ?? null,
           error_code: run.error_code ?? null,
-          next: run.prompt_id
-            ? `用 comfyui_get_job 查询 ${run.prompt_id} 的执行结果。`
-            : '提交结果未知，请勿重复提交；先确认 ComfyUI 队列里有没有这次任务。',
+          next: nextStepFor(run),
         }
       }),
     },

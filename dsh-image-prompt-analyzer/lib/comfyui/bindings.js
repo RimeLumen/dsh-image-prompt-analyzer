@@ -94,6 +94,17 @@ export function analyzeBindings(prompt) {
       id: node.id,
       ckpt_name: node.inputs?.ckpt_name ?? null,
     })),
+    // UNET / CLIP 分开加载的路径同样要能报出来，否则"换模型"只能改 checkpoint。
+    unets: ofType('UNETLoader').map((node) => ({
+      id: node.id,
+      unet_name: node.inputs?.unet_name ?? null,
+      weight_dtype: node.inputs?.weight_dtype ?? null,
+    })),
+    clips: ofType('CLIPLoader').map((node) => ({
+      id: node.id,
+      clip_name: node.inputs?.clip_name ?? null,
+      type: node.inputs?.type ?? null,
+    })),
     loras: ofType('LoraLoader').map((node) => ({
       id: node.id,
       lora_name: node.inputs?.lora_name ?? null,

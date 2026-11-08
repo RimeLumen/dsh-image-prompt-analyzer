@@ -8,8 +8,11 @@ import { createComfyClient } from './client.js'
 import { DISCOVERY_STATUS, collectDriveRoots, collectProcessCandidates, discoverComfyUI } from './discovery.js'
 import { reconcileModels } from './reconcile.js'
 import { sniffImage } from './image-info.js'
-import { inspectWorkflow } from './workflow.js'
+import { inspectWorkflow, requireApiPrompt } from './workflow.js'
 import { applyWorkflowPatch, planWorkflowPatch, stableFingerprint } from './patch.js'
+import { listWorkflows, matchWorkflows, resolveWorkflowByName, workflowRoots } from './workflows.js'
+import { createObjectInfoCache, fetchNodeInfos, projectNodeInfo } from './object-info.js'
+import { buildWorkflow as buildApiWorkflow, classesInPrompt, validateBuiltWorkflow } from './build.js'
 import { createRunRegistry, imageViewUrl, isSafeOutputRef, queryRun, submitPrompt } from './runs.js'
 import {
   LAUNCHER_ACTIONS,
@@ -27,6 +30,9 @@ export { createComfyClient } from './client.js'
 export { reconcileModels, filterByStates, MODEL_STATES } from './reconcile.js'
 export { inspectWorkflow, detectWorkflowFormat, inspectApiPrompt } from './workflow.js'
 export { planWorkflowPatch, applyWorkflowPatch, diffPatch } from './patch.js'
+export { listWorkflows, resolveWorkflowByName, workflowRoots, matchWorkflows, looseWorkflowKey } from './workflows.js'
+export { createObjectInfoCache, projectNodeInfo, optionsForInput, suggestOptions, MAX_OPTIONS_SHOWN } from './object-info.js'
+export { buildWorkflow, validateBuiltWorkflow, classesInPrompt, BUILD_DEFAULTS, BUILD_LOADERS } from './build.js'
 export { submitPrompt, queryRun, RUN_STATES, isValidPromptId, createRunRegistry, imageViewUrl, describeExecution, buildExecutionSuccess, isSafeOutputRef, isSafeOutputSubfolder } from './runs.js'
 export { sniffImage, IMAGE_MEDIA_TYPES } from './image-info.js'
 export {
@@ -48,6 +54,9 @@ export const DEFAULT_COMFY_ENABLED = true
 export const DEFAULT_COMFY_AUTO_DETECT = true
 export const DEFAULT_COMFY_TIMEOUT_MS = 30000
 export const COMFY_TIMEOUT_RANGE = Object.freeze({ min: 1000, max: 600000 })
+/** /object_info 的进程内缓存时长。节点定义只在装/卸自定义节点时变，五分钟够稳。 */
+export const DEFAULT_OBJECT_INFO_TTL_MS = 5 * 60 * 1000
+export const OBJECT_INFO_TTL_RANGE = Object.freeze({ min: 1000, max: 24 * 60 * 60 * 1000 })
 
 const KNOWN_KEYS = Object.freeze([
   'enabled',
@@ -56,7 +65,9 @@ const KNOWN_KEYS = Object.freeze([
   'installRoot',
   'extraModelPathsConfigFiles',
   'additionalModelRoots',
+  'workflowDirs',
   'requestTimeoutMs',
+  'objectInfoTtlMs',
 ])
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost'])
@@ -94,7 +105,9 @@ export function normalizeComfySettings(raw, { configFile = 'plugin config' } = {
     installRoot: null,
     extraModelPathsConfigFiles: [],
     additionalModelRoots: [],
+    workflowDirs: [],
     requestTimeoutMs: DEFAULT_COMFY_TIMEOUT_MS,
+    objectInfoTtlMs: DEFAULT_OBJECT_INFO_TTL_MS,
   }
 
   for (const key of Object.keys(input)) {
@@ -165,6 +178,7 @@ export function normalizeComfySettings(raw, { configFile = 'plugin config' } = {
   for (const [field, list] of [
     ['extraModelPathsConfigFiles', input.extraModelPathsConfigFiles],
     ['additionalModelRoots', input.additionalModelRoots],
+    ['workflowDirs', input.workflowDirs],
   ]) {
     if (list === undefined || list === null) continue
     if (!Array.isArray(list)) {
@@ -205,6 +219,21 @@ export function normalizeComfySettings(raw, { configFile = 'plugin config' } = {
           COMFY_CODES.VALIDATION_FAILED,
           '/comfyui/requestTimeoutMs',
           `requestTimeoutMs 必须是数字，收到 ${JSON.stringify(input.requestTimeoutMs)}。`,
+          configFile,
+        ),
+      )
+    }
+  }
+
+  if (input.objectInfoTtlMs !== undefined) {
+    if (typeof input.objectInfoTtlMs === 'number' && Number.isFinite(input.objectInfoTtlMs)) {
+      settings.objectInfoTtlMs = input.objectInfoTtlMs
+    } else {
+      diagnostics.push(
+        configIssue(
+          COMFY_CODES.VALIDATION_FAILED,
+          '/comfyui/objectInfoTtlMs',
+          `objectInfoTtlMs 必须是数字，收到 ${JSON.stringify(input.objectInfoTtlMs)}。`,
           configFile,
         ),
       )
@@ -362,7 +391,11 @@ export function createComfyRuntime({
       ...(pluginConfig?.comfyui?.extraModelPathsConfigFiles ?? []),
     ]),
     additionalModelRoots: Object.freeze([...(pluginConfig?.comfyui?.additionalModelRoots ?? [])]),
+    // 工作流默认只在 ComfyUI 自己的目录里找；额外目录要用户显式写出来。
+    // 这里不接受"扫全盘"，配置里写什么就只看什么。
+    workflowDirs: Object.freeze([...(pluginConfig?.comfyui?.workflowDirs ?? [])]),
     requestTimeoutMs: pluginConfig?.comfyui?.requestTimeoutMs ?? DEFAULT_COMFY_TIMEOUT_MS,
+    objectInfoTtlMs: pluginConfig?.comfyui?.objectInfoTtlMs ?? DEFAULT_OBJECT_INFO_TTL_MS,
     disabledReason: pluginConfig?.comfyui?.disabled_reason ?? null,
   })
 
@@ -389,6 +422,11 @@ export function createComfyRuntime({
 
   const catalogCache = createCatalogCache()
   const runRegistry = createRunRegistry()
+  // 节点定义缓存。键里绑着 baseUrl：换实例就整体作废，不拿旧定义去校验新节点。
+  const objectInfoCache = createObjectInfoCache({
+    ttlMs: settings.objectInfoTtlMs,
+    now: () => Date.now(),
+  })
   let discoveryCache = null
   // 唯一被真实 HTTP 调用验证过的地址。只有拿到 200 才写，连接失败就清掉，
   // 这样"配置里写着 8188"和"8188 上真有服务"不会混成同一件事。
@@ -831,6 +869,170 @@ export function createComfyRuntime({
     return Number(parsed.port || 80)
   }
 
+  /**
+   * 已知的 ComfyUI 安装目录。只认"已经确定过的"：
+   * 配置里写死的，或者之前一次发现/连接已经确认过的。
+   * 这里绝不为了列工作流去扫盘——列个工作流名称不值得把整块盘走一遍。
+   */
+  function knownInstallRoot() {
+    return settings.installRoot ?? discoveryCache?.selected?.installation_root ?? null
+  }
+
+  function workflowRootsOf() {
+    return workflowRoots({
+      installRoot: knownInstallRoot(),
+      workflowDirs: settings.workflowDirs,
+    })
+  }
+
+  /** 文件名只允许是名字：带分隔符就能跳出工作流目录。 */
+  function normalizeWorkflowFileName(raw) {
+    const value = typeof raw === 'string' ? raw.trim() : ''
+    if (value === '') {
+      throw new ComfyError(COMFY_CODES.VALIDATION_FAILED, '保存工作流需要 name。')
+    }
+    if (/[\\/:*?"<>|\u0000-\u001f]/u.test(value) || value === '.' || value === '..') {
+      throw new ComfyError(
+        COMFY_CODES.VALIDATION_FAILED,
+        `文件名只能是名字本身，不能含路径分隔符或特殊字符：${value}`,
+        '例如 "my_flux_workflow"，不要写目录。目录用 directory 参数指定。',
+      )
+    }
+    return /\.json$/iu.test(value) ? value : `${value}.json`
+  }
+
+  function samePath(a, b) {
+    const left = String(a ?? '').replace(/[\\/]+$/u, '').replace(/\\/gu, '/').toLowerCase()
+    const right = String(b ?? '').replace(/[\\/]+$/u, '').replace(/\\/gu, '/').toLowerCase()
+    return left !== '' && left === right
+  }
+
+  /**
+   * 按名称找本地工作流。
+   * 返回的是文件元数据，不是文件内容；读文件是下一步的事，
+   * 因为"找到了"和"读得出来"是两种失败，混在一起就说不清了。
+   */
+  async function listLocalWorkflows({ signal = null, query = null, limit = null } = {}) {
+    const roots = workflowRootsOf()
+    const listing = await listWorkflows(getFs(), roots, { signal })
+    let items = listing.items
+    let matchLevel = null
+    if (typeof query === 'string' && query.trim() !== '') {
+      const matched = matchWorkflows(items, query)
+      items = matched.matches
+      matchLevel = matched.level
+    }
+    if (typeof limit === 'number' && Number.isFinite(limit) && limit > 0) {
+      items = items.slice(0, limit)
+    }
+    return {
+      items,
+      roots: listing.roots,
+      diagnostics: listing.diagnostics,
+      partial: listing.partial,
+      skipped: listing.skipped,
+      total: listing.items.length,
+      install_root: knownInstallRoot(),
+      match_level: matchLevel,
+    }
+  }
+
+  async function resolveLocalWorkflow(name, { signal = null } = {}) {
+    return resolveWorkflowByName(getFs(), workflowRootsOf(), name, { signal })
+  }
+
+  /**
+   * 只问当前这次操作真正用得上的节点定义。
+   * 命中缓存就不发请求；未知节点也缓存，免得同一个不存在的节点反复问。
+   */
+  async function getNodeInfos(classTypes, { signal = null, refresh = false } = {}) {
+    return fetchNodeInfos({
+      client: getClient(),
+      cache: objectInfoCache,
+      classTypes,
+      signal,
+      refresh,
+    })
+  }
+
+  /**
+   * 另存为新文件。三条硬规矩：只写在已配置的工作流根里、只新建不覆盖、
+   * 文件名不许带路径分隔符——不然用户传个 ../.. 就能写到根外面去。
+   */
+  async function saveLocalWorkflow({ workflow, name, directory = null, signal = null } = {}) {
+    const fsAdapter = getFs()
+    if (!fsAdapter.writable) {
+      throw new ComfyError(COMFY_CODES.CAPABILITY_UNAVAILABLE, '当前 profile 的 fs 服务不支持写入，无法保存工作流。')
+    }
+    const fileName = normalizeWorkflowFileName(name)
+    const prompt = requireApiPrompt(workflow)
+
+    const roots = workflowRootsOf()
+    let chosen = null
+    if (typeof directory === 'string' && directory.trim() !== '') {
+      const wanted = directory.trim()
+      const hit = roots.find((root) => samePath(root.path, wanted))
+      if (!hit) {
+        throw new ComfyError(
+          COMFY_CODES.PATH_DENIED,
+          `只能保存到已配置的工作流目录，${wanted} 不在其中。`,
+          '先在 comfyui.workflowDirs 里登记这个目录，或省略 directory 用默认目录。',
+        )
+      }
+      chosen = hit
+    } else {
+      for (const root of roots) {
+        const target = await fsAdapter.resolve(root.path, { signal }).catch(() => null)
+        if (!target) continue
+        const info = await fsAdapter.stat(target, { signal }).catch(() => null)
+        if (info?.type === 'directory') {
+          chosen = root
+          break
+        }
+      }
+      if (!chosen) {
+        throw new ComfyError(
+          COMFY_CODES.PATH_MISSING,
+          '没有可用的工作流目录：默认目录不存在，配置里也没有能写的 workflowDirs。',
+          '先在 ComfyUI 里保存过一次工作流，或把目录登记到 comfyui.workflowDirs。',
+        )
+      }
+    }
+
+    const dirTarget = await fsAdapter.resolve(chosen.path, { signal })
+    const filePath = `${chosen.path.replace(/[\\/]+$/u, '')}${chosen.path.includes('\\') && !chosen.path.includes('/') ? '\\' : '/'}${fileName}`
+    const fileTarget = await fsAdapter.resolve(filePath, { signal })
+    if (!fsAdapter.contains(dirTarget, fileTarget)) {
+      throw new ComfyError(COMFY_CODES.PATH_DENIED, `解析后的目标不在工作流目录里：${filePath}`)
+    }
+    const body = `${JSON.stringify(prompt, null, 2)}\n`
+    await fsAdapter.writeTextNew(fileTarget, body, { signal })
+    return {
+      saved: true,
+      name: fileName,
+      path: filePath,
+      directory: chosen.path,
+      root_source: chosen.root_source ?? chosen.source ?? null,
+      bytes: Buffer.byteLength(body, 'utf8'),
+      node_count: Object.keys(prompt).length,
+    }
+  }
+
+  /** 搭一份基础 API 工作流，并拿真实节点定义逐项校验。 */
+  async function buildLocalWorkflow(input = {}, { signal = null, refresh = false } = {}) {
+    const built = buildApiWorkflow(input)
+    const classes = classesInPrompt(built.prompt)
+    const infos = await getNodeInfos(classes, { signal, refresh })
+    const validation = validateBuiltWorkflow({
+      prompt: built.prompt,
+      // byClass 是 Map，validateBuiltWorkflow 按对象取键；不转一次会一个都查不到，
+      // 结果每个节点都被判成"拿不到节点定义"，而 missing 又是空的，很难看出问题。
+      objectInfoByClass: Object.fromEntries(infos.byClass),
+      requireObjectInfo: true,
+    })
+    return { ...built, classes, validation, missing: infos.missing, failures: infos.failures }
+  }
+
   return {
     get enabled() {
       return settings.enabled && phase !== 'disposed'
@@ -862,6 +1064,14 @@ export function createComfyRuntime({
     discover,
     scanModels,
     getClient,
+    getNodeInfos,
+    get objectInfoCache() {
+      return objectInfoCache
+    },
+    listLocalWorkflows,
+    resolveLocalWorkflow,
+    buildLocalWorkflow,
+    saveLocalWorkflow,
     inspectWorkflow,
     planWorkflowPatch,
     applyWorkflowPatch,
@@ -1215,6 +1425,8 @@ export function createComfyRuntime({
       client = null
       catalogCache.clear()
       runRegistry.clear()
+      // 节点定义缓存也是进程内状态，卸载后不该留着。
+      objectInfoCache.invalidate()
       discoveryCache = null
       verifiedBaseUrl = null
       // 只结束本插件启动的后端。terminate 对已退出的进程会抛，按"已经不在"处理。

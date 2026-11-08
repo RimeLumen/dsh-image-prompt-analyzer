@@ -73,6 +73,10 @@ import {
   probeComfyDirectories,
 } from '../lib/comfyui/discovery.js'
 import { createComfyToolSpecs } from '../lib/comfyui/tools.js'
+import { listWorkflows, resolveWorkflowByName, workflowRoots } from '../lib/comfyui/workflows.js'
+import { createObjectInfoCache, fetchNodeInfos } from '../lib/comfyui/object-info.js'
+import { buildWorkflow, classesInPrompt, validateBuiltWorkflow } from '../lib/comfyui/build.js'
+import { ROLE_VALUES, resolveSemanticChanges } from '../lib/comfyui/edits.js'
 import { registerTool } from '../lib/tools/registry.js'
 import YAML from 'yaml'
 import { createFakeFetch, createFakeSubprocess, createMemoryFs, imageResponse, jsonResponse, pngBytes } from './fixtures/comfyui/harness.mjs'
@@ -1248,7 +1252,7 @@ test('输出图片只按 /view 参数拼 URL，带路径片段的名字被拒', 
   )
 })
 
-test('未启用时七个工具一律返回 CAPABILITY_UNAVAILABLE，且不碰 fs 与网络', async () => {
+test('未启用时十个工具一律返回 CAPABILITY_UNAVAILABLE，且不碰 fs 与网络', async () => {
   const forbiddenCtx = new Proxy(
     {},
     {
@@ -1268,6 +1272,9 @@ test('未启用时七个工具一律返回 CAPABILITY_UNAVAILABLE，且不碰 fs
   assert.deepEqual(specs.map((spec) => spec.name), [
     'comfyui_status',
     'comfyui_list_models',
+    'comfyui_list_workflows',
+    'comfyui_build_workflow',
+    'comfyui_save_workflow',
     'comfyui_inspect_workflow',
     'comfyui_plan_workflow_patch',
     'comfyui_submit_workflow',
@@ -1820,7 +1827,7 @@ test('自动发现只在有限候选里找，不会退化成全盘扫描', async
   }
 })
 
-test('显式 enabled=false 时七个工具根本不注册，discover 也不会跑', async () => {
+test('显式 enabled=false 时十个工具根本不注册，discover 也不会跑', async () => {
   const runtime = createRuntime({ ctx: {}, config: { comfyui: { enabled: false } }, logger: SILENT_LOGGER })
   const { registered, disposeCalls } = await registerIntoRecorder(runtime)
   const names = registered.map((item) => item.name)
@@ -1868,7 +1875,7 @@ test('代理可能把 loopback 请求带出本机时，自动探测直接放弃�
   assert.equal(result.candidates[0].status, DISCOVERY_STATUS.NOT_RUNNING)
 })
 
-test('七个工具在任何状态下都不把 undefined 拼进错误信息', async () => {
+test('十个工具在任何状态下都不把 undefined 拼进错误信息', async () => {
   const comfy = createComfyRuntime({
     ctx: {},
     pluginConfig: { comfyui: { enabled: false } },
@@ -1890,7 +1897,7 @@ test('默认配置下 ComfyUI 工具会注册，且状态工具能回答"未发�
   const runtime = createRuntime({ ctx: {}, config: {}, logger: SILENT_LOGGER })
   const { registered, disposeCalls } = await registerIntoRecorder(runtime)
   const comfyTools = registered.filter((item) => item.name.startsWith('comfyui_')).map((item) => item.name)
-  assert.equal(comfyTools.length, 7)
+  assert.equal(comfyTools.length, 10)
   for (const dispose of disposeCalls) dispose()
 
   const comfy = await runtime.getComfyUI()
@@ -4257,4 +4264,400 @@ test('manage_experiences 收到新档案名时，自动把旧名一起查', asyn
     } catch {}
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// ───────────────────── 工作流：用本地文件，不扫全盘、不替用户挑 ─────────────────────
+// 这一段证明的是"检索 → 读取 → 修改 → 另存"这条链的形状。
+// 内存 fs 里通过不等于本机 ComfyUI 的节点定义真的齐全，那是另一件事。
+
+const WF_INSTALL = 'C:\\ComfyUI'
+const WF_DIR = `${WF_INSTALL}/user/default/workflows`
+
+/** 一份最小 7 节点 API Prompt，读取与修改都拿它当样本。 */
+function sampleApiWorkflow() {
+  return {
+    '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'waiIllustriousSDXL_v140.safetensors' } },
+    '2': { class_type: 'CLIPTextEncode', inputs: { text: '1girl, silver hair', clip: ['1', 1] } },
+    '3': { class_type: 'CLIPTextEncode', inputs: { text: 'bad hands', clip: ['1', 1] } },
+    '4': { class_type: 'EmptyLatentImage', inputs: { width: 768, height: 1024, batch_size: 1 } },
+    '5': {
+      class_type: 'KSampler',
+      inputs: {
+        seed: 1234567890,
+        steps: 24,
+        cfg: 6,
+        sampler_name: 'euler',
+        scheduler: 'normal',
+        denoise: 1,
+        model: ['1', 0],
+        positive: ['2', 0],
+        negative: ['3', 0],
+        latent_image: ['4', 0],
+      },
+    },
+    '6': { class_type: 'VAEDecode', inputs: { samples: ['5', 0], vae: ['1', 2] } },
+    '7': { class_type: 'SaveImage', inputs: { images: ['6', 0], filename_prefix: 'sample' } },
+  }
+}
+
+/** 前端「保存」导出的那种：nodes + links，不是 API Prompt。 */
+const UI_EXPORT = { version: 0.4, nodes: [{ id: 1, type: 'CheckpointLoaderSimple' }], links: [] }
+
+function workflowTree(files) {
+  const tree = installTree(WF_INSTALL)
+  tree[WF_DIR] = { type: 'directory' }
+  for (const [relative, body] of Object.entries(files)) {
+    tree[`${WF_DIR}/${relative}`] = { type: 'file', size: 2048, text: JSON.stringify(body) }
+  }
+  return tree
+}
+
+function nodeInfo(required = {}, optional = {}) {
+  return { input: { required, optional } }
+}
+
+/** 只覆盖首版会搭到的那九个节点类，字段形状照 /object_info 的真实嵌套。 */
+const BUILD_OBJECT_INFO = {
+  CheckpointLoaderSimple: nodeInfo({ ckpt_name: [['wai.safetensors'], {}] }),
+  UNETLoader: nodeInfo({
+    unet_name: [['flux1-dev-fp8.safetensors'], {}],
+    weight_dtype: [['default', 'fp8_e4m3fn'], {}],
+  }),
+  CLIPLoader: nodeInfo({ clip_name: [['t5xxl_fp8.safetensors'], {}], type: [['stable_diffusion'], {}] }),
+  VAELoader: nodeInfo({ vae_name: [['ae.safetensors'], {}] }),
+  LoraLoader: nodeInfo({
+    lora_name: [['detail.safetensors'], {}],
+    strength_model: ['FLOAT', { min: -10, max: 10 }],
+    strength_clip: ['FLOAT', { min: -10, max: 10 }],
+    model: ['MODEL', {}],
+    clip: ['CLIP', {}],
+  }),
+  CLIPTextEncode: nodeInfo({ text: ['STRING', {}], clip: ['CLIP', {}] }),
+  EmptyLatentImage: nodeInfo({
+    width: ['INT', { min: 16, max: 16384 }],
+    height: ['INT', { min: 16, max: 16384 }],
+    batch_size: ['INT', { min: 1, max: 64 }],
+  }),
+  KSampler: nodeInfo({
+    seed: ['INT', { min: 0, max: 4294967295 }],
+    steps: ['INT', { min: 1, max: 10000 }],
+    cfg: ['FLOAT', { min: 0, max: 100 }],
+    sampler_name: [['euler', 'dpmpp_2m'], {}],
+    scheduler: [['normal', 'karras'], {}],
+    denoise: ['FLOAT', { min: 0, max: 1 }],
+    model: ['MODEL', {}],
+    positive: ['CONDITIONING', {}],
+    negative: ['CONDITIONING', {}],
+    latent_image: ['LATENT', {}],
+  }),
+  VAEDecode: nodeInfo({ samples: ['LATENT', {}], vae: ['VAE', {}] }),
+  SaveImage: nodeInfo({ images: ['IMAGE', {}], filename_prefix: ['STRING', {}] }),
+}
+
+function comfyWithFs(tree, extra = {}) {
+  const fs = createMemoryFs({ tree })
+  const comfy = createComfyRuntime({
+    ctx: { fs },
+    pluginConfig: { comfyui: { enabled: true, installRoot: WF_INSTALL, ...extra } },
+    logger: SILENT_LOGGER,
+  })
+  return { fs, comfy }
+}
+
+test('本地工作流按名字检索：不带扩展名、大小写与分隔符都能认', async () => {
+  const fs = createMemoryFs({
+    tree: workflowTree({ 'portrait_flux.json': sampleApiWorkflow(), 'scene.json': sampleApiWorkflow() }),
+  })
+  const roots = workflowRoots({ installRoot: WF_INSTALL })
+  const listing = await listWorkflows(fs, roots)
+  assert.deepEqual(listing.items.map((item) => item.stem), ['portrait_flux', 'scene'])
+  assert.equal(listing.partial, false)
+
+  const exact = await resolveWorkflowByName(fs, roots, 'portrait_flux.json')
+  assert.equal(exact.level, 'exact')
+
+  // 用户通常不带扩展名：补上 .json 后就是同一个文件，不必让他记住后缀。
+  const stem = await resolveWorkflowByName(fs, roots, 'portrait_flux')
+  assert.equal(stem.level, 'exact')
+  assert.equal(stem.item.relative_path, 'portrait_flux.json')
+
+  // 连分隔符都记错时再退一步按"抹掉 - _ . 空白"比较。
+  const loose = await resolveWorkflowByName(fs, roots, 'Portrait-Flux')
+  assert.equal(loose.level, 'loose')
+  assert.equal(loose.item.name, 'portrait_flux.json')
+})
+
+test('同名工作流有多份时报候选，绝不替用户挑一个', async () => {
+  const tree = workflowTree({ 'portrait_flux.json': sampleApiWorkflow() })
+  tree[`${WF_DIR}/archive`] = { type: 'directory' }
+  tree[`${WF_DIR}/archive/portrait_flux.json`] = {
+    type: 'file',
+    size: 2048,
+    text: JSON.stringify(sampleApiWorkflow()),
+  }
+  const fs = createMemoryFs({ tree })
+  const roots = workflowRoots({ installRoot: WF_INSTALL })
+
+  await assert.rejects(
+    () => resolveWorkflowByName(fs, roots, 'portrait_flux'),
+    (error) => {
+      assert.equal(error.code, COMFY_CODES.BINDING_AMBIGUOUS)
+      assert.equal(error.candidates.length, 2)
+      assert.equal(new Set(error.candidates.map((item) => item.display_path)).size, 2)
+      return true
+    },
+  )
+})
+
+test('找不到工作流时报可用名称，不拿别的工作流顶替', async () => {
+  const fs = createMemoryFs({ tree: workflowTree({ 'portrait_flux.json': sampleApiWorkflow() }) })
+  const roots = workflowRoots({ installRoot: WF_INSTALL })
+
+  await assert.rejects(
+    () => resolveWorkflowByName(fs, roots, 'nothing_here'),
+    (error) => {
+      assert.equal(error.code, COMFY_CODES.PATH_MISSING)
+      assert.deepEqual(error.available, ['portrait_flux.json'])
+      assert.match(error.message, /没有找到名为 nothing_here/)
+      return true
+    },
+  )
+})
+
+test('comfyui_list_workflows 只回名字与大小，不回工作流内容', async () => {
+  const { comfy } = comfyWithFs(
+    workflowTree({ 'portrait_flux.json': sampleApiWorkflow(), 'scene.json': sampleApiWorkflow() }),
+  )
+  const specs = createComfyToolSpecs({ getComfyUI: async () => comfy, logger: SILENT_LOGGER })
+  const list = specs.find((item) => item.name === 'comfyui_list_workflows')
+
+  const all = await list.execute({}, {})
+  assert.equal(all.total, 2)
+  assert.equal(all.returned, 2)
+  assert.deepEqual(all.workflows.map((item) => item.name), ['portrait_flux.json', 'scene.json'])
+  const text = JSON.stringify(all)
+  assert.equal(text.includes('class_type'), false, '列表不该带工作流内容')
+  assert.equal(text.includes('waiIllustriousSDXL'), false)
+
+  const filtered = await list.execute({ query: 'portrait_flux' }, {})
+  assert.equal(filtered.total, 2)
+  assert.equal(filtered.returned, 1)
+  assert.equal(filtered.match_level, 'exact')
+  await comfy.dispose()
+})
+
+test('UI 格式的工作流能读能看，但不转换；拿它去改或去提交会被明确拒绝', async () => {
+  const { comfy, fs } = comfyWithFs(workflowTree({ 'ui_export.json': UI_EXPORT }))
+  const specs = createComfyToolSpecs({ getComfyUI: async () => comfy, logger: SILENT_LOGGER })
+  const inspect = specs.find((item) => item.name === 'comfyui_inspect_workflow')
+  const plan = specs.find((item) => item.name === 'comfyui_plan_workflow_patch')
+
+  // 只读检查如实告诉调用方"这是 UI 格式、不能转换"，而不是假装它是 API Prompt。
+  const report = await inspect.execute({ workflow_name: 'ui_export' }, {})
+  assert.equal(report.format, 'ui')
+  assert.equal(report.convertible, false)
+  assert.equal(report.node_count, 1)
+  assert.match(report.note, /不转换/)
+
+  // 真要动手时就必须失败，绝不能拿 UI 格式去当 API Prompt 提交。
+  const refused = await plan.execute(
+    { workflow_name: 'ui_export', changes: [{ role: 'checkpoint', value: 'x.safetensors' }] },
+    {},
+  )
+  assert.equal(refused.status, 'failed')
+  assert.equal(refused.diagnostics[0].error_code, COMFY_CODES.WORKFLOW_FORMAT_UNSUPPORTED)
+  assert.match(refused.diagnostics[0].message, /UI Workflow/)
+  // 拒绝就是拒绝：没有偷偷写出转换后的文件。
+  assert.equal(fs.writes.length, 0)
+  await comfy.dispose()
+})
+
+test('语义角色能把"换模型、改采样参数"翻成具体节点上的具体字段', () => {
+  const prompt = sampleApiWorkflow()
+  const resolved = resolveSemanticChanges(prompt, [
+    { role: 'checkpoint', value: 'other.safetensors' },
+    { role: 'sampler', field: 'steps', value: 30 },
+    { role: 'latent', field: 'width', value: 1024 },
+    { role: 'positive', value: 'black hair' },
+  ])
+
+  assert.deepEqual(
+    resolved.map((item) => [item.node_id, item.field, item.value]),
+    [
+      ['1', 'ckpt_name', 'other.safetensors'],
+      ['5', 'steps', 30],
+      ['4', 'width', 1024],
+      ['2', 'text', 'black hair'],
+    ],
+  )
+  // 解析只算出一份改动清单，原工作流一个字段都没被就地改写。
+  assert.equal(prompt['1'].inputs.ckpt_name, 'waiIllustriousSDXL_v140.safetensors')
+  assert.equal(prompt['5'].inputs.steps, 24)
+
+  // 工作流里没有 LoRA 时，不能凭空加一个出来。
+  assert.throws(
+    () => resolveSemanticChanges(prompt, [{ role: 'lora', value: 'x.safetensors' }]),
+    (error) => {
+      assert.equal(error.code, COMFY_CODES.NODE_UNSUPPORTED)
+      assert.match(error.message, /没有 lora 节点/)
+      return true
+    },
+  )
+  // 不认识的修改目标直接点名，而不是静默跳过。
+  assert.throws(
+    () => resolveSemanticChanges(prompt, [{ role: 'style', value: 'x' }]),
+    (error) => error.code === COMFY_CODES.VALIDATION_FAILED,
+  )
+})
+
+test('新建工作流两条加载路径都能过节点定义校验，缺模型直接报错', () => {
+  const checkpoint = buildWorkflow({
+    positive: 'a girl, silver hair',
+    checkpoint: 'wai.safetensors',
+    steps: 20,
+    cfg: 6,
+  })
+  assert.equal(checkpoint.loader, 'checkpoint')
+  assert.equal(checkpoint.node_count, 7)
+  assert.deepEqual(classesInPrompt(checkpoint.prompt), [
+    'CLIPTextEncode',
+    'CheckpointLoaderSimple',
+    'EmptyLatentImage',
+    'KSampler',
+    'SaveImage',
+    'VAEDecode',
+  ])
+  const checkpointCheck = validateBuiltWorkflow({
+    prompt: checkpoint.prompt,
+    objectInfoByClass: BUILD_OBJECT_INFO,
+  })
+  assert.equal(checkpointCheck.ok, true, JSON.stringify(checkpointCheck.problems))
+
+  const unet = buildWorkflow({
+    loader: 'unet',
+    positive: 'a girl',
+    unet: 'flux1-dev-fp8.safetensors',
+    clip: 't5xxl_fp8.safetensors',
+    vae: 'ae.safetensors',
+    loras: [{ name: 'detail.safetensors', strength_model: 0.6 }],
+  })
+  assert.equal(unet.loader, 'unet')
+  assert.equal(unet.lora_count, 1)
+  assert.equal(unet.node_count, 10)
+  assert.equal(unet.prompt[unet.sampler_id].inputs.model[0], '4')
+  const unetCheck = validateBuiltWorkflow({ prompt: unet.prompt, objectInfoByClass: BUILD_OBJECT_INFO })
+  assert.equal(unetCheck.ok, true, JSON.stringify(unetCheck.problems))
+
+  // 模型名不在枚举里就是错，不许写一个看起来能用、实际不存在的名字。
+  const missing = buildWorkflow({ positive: 'a girl', checkpoint: 'not_installed.safetensors' })
+  const missingCheck = validateBuiltWorkflow({ prompt: missing.prompt, objectInfoByClass: BUILD_OBJECT_INFO })
+  assert.equal(missingCheck.ok, false)
+  assert.equal(missingCheck.problems[0].error_code, COMFY_CODES.VALIDATION_FAILED)
+  assert.match(missingCheck.problems[0].message, /枚举/)
+
+  assert.throws(
+    () => buildWorkflow({ loader: 'gguf', positive: 'x' }),
+    (error) => error.code === COMFY_CODES.NODE_UNSUPPORTED,
+  )
+})
+
+test('新建工作流走运行时校验时，节点定义按类名逐项取到，不会被误判成拿不到定义', async () => {
+  // 这条专门盯一个真实踩过的坑：运行时把节点定义存成 Map，校验函数按对象取键。
+  // 直接拿 Map 进去查，一个都查不到，于是每个节点都被判成"拿不到节点定义"，
+  // 而 missing 又是空的——只看 missing 会以为一切正常。
+  const routes = {}
+  for (const [classType, entry] of Object.entries(BUILD_OBJECT_INFO)) {
+    routes[`/object_info/${classType}`] = () => ({ [classType]: entry })
+  }
+  const { fetchImpl, calls } = createFakeFetch(routes)
+  const comfy = createComfyRuntime({
+    ctx: { fs: createMemoryFs({ tree: workflowTree({}) }) },
+    pluginConfig: { comfyui: { enabled: true, installRoot: WF_INSTALL } },
+    logger: SILENT_LOGGER,
+    fetchImpl,
+  })
+
+  const built = await comfy.buildLocalWorkflow({
+    positive: 'a girl, silver hair',
+    checkpoint: 'wai.safetensors',
+    steps: 20,
+    cfg: 6,
+  })
+  assert.equal(built.validation.ok, true, JSON.stringify(built.validation.problems))
+  assert.deepEqual(built.validation.problems, [])
+  assert.deepEqual(built.missing, [])
+  assert.equal(calls.length, 6)
+
+  // 同一个实例再搭一次：节点定义全在缓存里，不该再发请求。
+  const again = await comfy.buildLocalWorkflow({ positive: 'a girl', checkpoint: 'wai.safetensors' })
+  assert.equal(again.validation.ok, true)
+  assert.equal(calls.length, 6)
+
+  await comfy.dispose()
+})
+
+test('节点定义按需取并缓存：负缓存也命中，refresh 才重新问', async () => {
+  let clock = 0
+  const cache = createObjectInfoCache({ ttlMs: 1000, now: () => clock })
+  const calls = []
+  const client = {
+    baseUrl: 'http://127.0.0.1:8188',
+    async getObjectInfoFor(classType) {
+      calls.push(classType)
+      return BUILD_OBJECT_INFO[classType] ?? null
+    },
+  }
+
+  const first = await fetchNodeInfos({ client, cache, classTypes: ['KSampler', 'NoSuchNode'] })
+  assert.equal(first.fetched, 2)
+  assert.deepEqual(first.missing, ['NoSuchNode'])
+  assert.equal(first.byClass.get('KSampler').input.required.steps[0], 'INT')
+
+  const second = await fetchNodeInfos({ client, cache, classTypes: ['KSampler', 'NoSuchNode'] })
+  assert.equal(second.fetched, 0, '缓存命中时不该再发请求')
+  assert.deepEqual(second.missing, ['NoSuchNode'])
+  assert.deepEqual(calls, ['KSampler', 'NoSuchNode'])
+
+  // 过期之后重新问；负缓存同样过期。
+  clock = 2000
+  const third = await fetchNodeInfos({ client, cache, classTypes: ['KSampler', 'NoSuchNode'] })
+  assert.equal(third.fetched, 2)
+  assert.deepEqual(calls, ['KSampler', 'NoSuchNode', 'KSampler', 'NoSuchNode'])
+
+  // 显式 refresh 跳过缓存，哪怕还没过期。
+  await fetchNodeInfos({ client, cache, classTypes: ['KSampler'], refresh: true })
+  assert.equal(calls.filter((item) => item === 'KSampler').length, 3)
+})
+
+test('另存工作流只新建不覆盖，文件名带路径分隔符会被拒', async () => {
+  const { comfy, fs } = comfyWithFs(workflowTree({ 'portrait_flux.json': sampleApiWorkflow() }))
+
+  const saved = await comfy.saveLocalWorkflow({ workflow: sampleApiWorkflow(), name: 'my_flux' })
+  assert.equal(saved.saved, true)
+  assert.equal(saved.name, 'my_flux.json')
+  assert.equal(saved.node_count, 7)
+  assert.equal(fs.writes.length, 1)
+  assert.equal(fs.writes[0].expected.kind, 'createIfAbsent')
+  assert.equal(JSON.parse(fs.writes[0].content)['5'].inputs.steps, 24)
+
+  await assert.rejects(
+    () => comfy.saveLocalWorkflow({ workflow: sampleApiWorkflow(), name: 'my_flux' }),
+    (error) => {
+      assert.equal(error.code, COMFY_CODES.VALIDATION_FAILED)
+      assert.match(error.message, /不覆盖/)
+      return true
+    },
+  )
+  await assert.rejects(
+    () => comfy.saveLocalWorkflow({ workflow: sampleApiWorkflow(), name: '../escape' }),
+    (error) => {
+      assert.equal(error.code, COMFY_CODES.VALIDATION_FAILED)
+      assert.match(error.message, /路径分隔符/)
+      return true
+    },
+  )
+  // 两次失败都没有产生新的写入，原始工作流也没被就地改写。
+  assert.equal(fs.writes.length, 1)
+  assert.equal(JSON.parse(fs.writes[0].content)['1'].inputs.ckpt_name, 'waiIllustriousSDXL_v140.safetensors')
+  await comfy.dispose()
 })

@@ -23,7 +23,8 @@ export function createMemoryFs({ tree = {}, symlinks = {}, deny = [] } = {}) {
   }
   const denied = new Set(deny.map(normalize))
 
-  const stats = { resolveCalls: 0, listCalls: 0, readCalls: 0 }
+  const stats = { resolveCalls: 0, listCalls: 0, readCalls: 0, writeCalls: 0 }
+  const writes = []
 
   function targetOf(path) {
     const key = normalize(path)
@@ -43,13 +44,20 @@ export function createMemoryFs({ tree = {}, symlinks = {}, deny = [] } = {}) {
   const adapter = {
     available: true,
     stats,
+    writes,
     async resolve(path) {
       stats.resolveCalls += 1
       const key = normalize(path)
       if (!nodes.has(key) && !links.has(key)) {
-        const error = new Error(`ENOENT: ${path}`)
-        error.code = 'ENOENT'
-        throw error
+        // 真实 Host 的 resolve 是词法解析：路径不必存在，存在与否交给 stat 判。
+        // 这里只在"连父目录都不存在"时才报错，否则 createIfAbsent 写入没有目标可用。
+        const cut = key.lastIndexOf('/')
+        const parent = cut > 0 ? nodes.get(key.slice(0, cut)) : null
+        if (!parent || parent.type !== 'directory') {
+          const error = new Error(`ENOENT: ${path}`)
+          error.code = 'ENOENT'
+          throw error
+        }
       }
       if (denied.has(key)) {
         const error = new Error(`EACCES: ${path}`)
@@ -130,6 +138,27 @@ export function createMemoryFs({ tree = {}, symlinks = {}, deny = [] } = {}) {
     },
     targetKey(target) {
       return target.targetKey
+    },
+    // 写能力按 Host fs 的真实签名模拟：expected 只有 createIfAbsent 一种意图，
+    // 目标已存在就按真实实现那样报 EEXIST，绝不悄悄覆盖。
+    async writeText(target, content, expected) {
+      const key = target.targetKey
+      stats.writeCalls += 1
+      if (denied.has(key)) {
+        const error = new Error(`EACCES: ${key}`)
+        error.code = 'EACCES'
+        throw error
+      }
+      const existing = nodes.get(key)
+      if (expected?.kind === 'createIfAbsent' && existing) {
+        const error = new Error(`EEXIST: ${key}`)
+        error.code = 'EEXIST'
+        throw error
+      }
+      // 只记真正落盘的写入：被拒绝的那次不该在断言里算成一次写入。
+      writes.push({ targetKey: key, content, expected })
+      nodes.set(key, { type: 'file', text: content })
+      return { operation: existing ? 'update' : 'create', version: 'v1', before: existing?.text ?? null, after: content }
     },
   }
   return adapter

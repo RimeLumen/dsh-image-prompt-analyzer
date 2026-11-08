@@ -6,6 +6,8 @@ const MISSING_CODES = new Set(['ENOENT', 'FS_NOT_FOUND', 'FS_NO_SUCH_FILE', 'FS_
 const DENIED_CODES = new Set(['EACCES', 'EPERM', 'FS_DENIED', 'FS_PERMISSION_DENIED', 'FS_SANDBOX_DENIED'])
 const UNRESOLVED_CODES = new Set(['EINVAL', 'ENOTDIR', 'FS_INVALID_PATH', 'FS_PATH_INVALID', 'ERR_INVALID_ARG_TYPE'])
 const TOO_LARGE_CODES = new Set(['FS_TOO_LARGE', 'EFBIG'])
+// 写入专用：目标已存在或版本对不上。这是"拒绝覆盖"，不是路径错误。
+const EXISTS_CODES = new Set(['EEXIST', 'FS_EXISTS', 'FS_ALREADY_EXISTS', 'FS_STALE_VERSION', 'FS_VERSION_CONFLICT'])
 
 /** 把任意 fs 层异常收敛成带 COMFY_* 码的 ComfyError。 */
 export function mapFsError(error, { path = null, action = '访问' } = {}) {
@@ -136,6 +138,35 @@ export function createFsAdapter(ctx) {
         return await api.readText(target, signal)
       } catch (error) {
         throw mapFsError(error, { path: target?.displayPath, action: '读取文本' })
+      }
+    },
+
+    /** 写能力是可选的：没有它只影响"另存工作流"，读、扫描、校验都不受影响。 */
+    writable: Boolean(fs && typeof fs.writeText === 'function'),
+
+    /**
+     * 只新建，不覆盖。intent 固定 createIfAbsent，目标已存在时宿主会拒绝；
+     * 那种拒绝翻成 VALIDATION_FAILED 并明说是"已存在"，不能报成路径错误。
+     */
+    async writeTextNew(target, content, { signal } = {}) {
+      const api = requireFs()
+      if (typeof api.writeText !== 'function') {
+        throw new ComfyError(
+          COMFY_CODES.CAPABILITY_UNAVAILABLE,
+          '当前 fs 服务没有提供 writeText，无法保存工作流。',
+        )
+      }
+      try {
+        return await api.writeText(target, content, { kind: 'createIfAbsent' }, signal)
+      } catch (error) {
+        if (EXISTS_CODES.has(error?.code)) {
+          throw new ComfyError(
+            COMFY_CODES.VALIDATION_FAILED,
+            `目标文件已存在，插件不覆盖：${target?.displayPath ?? ''}`,
+            '换一个文件名，或先把原文件挪走。覆盖已有文件必须由你手动确认。',
+          )
+        }
+        throw mapFsError(error, { path: target?.displayPath, action: '写入文件' })
       }
     },
 

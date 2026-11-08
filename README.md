@@ -273,7 +273,9 @@ comfyui:
   installRoot: null                     # 留空就走自动发现；填了就以你填的为准
   extraModelPathsConfigFiles: []        # 额外的 extra_model_paths.yaml，绝对路径
   additionalModelRoots: []              # 额外的模型根目录，绝对路径
+  workflowDirs: []                      # 额外的工作流目录，绝对路径；默认只看 ComfyUI 自己的
   requestTimeoutMs: 30000               # 1000–600000
+  objectInfoTtlMs: 300000               # /object_info 缓存有效期，1000–86400000
 ```
 
 自动发现按固定顺序尝试，每一步都只查已知位置和这些位置往下几层，**不遍历盘根、不扫用户目录、不扫端口段**：
@@ -302,17 +304,34 @@ comfyui:
 
 **不支持**官方 ComfyUI Desktop 的私有配置——`extra_models_config.yaml`、`settings.json`、`installations.json` 之类不做适配，也不参与发现。Desktop 拉起的进程如果确实在跑 ComfyUI 的 `main.py`，通用进程发现照样能认出它的安装根，但会标注这是 Desktop 应用包、不算受支持的安装方式；长期使用请把 `comfyui.installRoot` 指向你自己装的 ComfyUI。
 
-启用后提供七个工具：
+启用后提供十个工具：
 
 | 工具 | 做什么 |
 |---|---|
 | `comfyui_status` | 查连接状态与版本；未启用时也回答"为什么没启用" |
 | `comfyui_list_models` | 扫本地模型目录，按分类/名称/四态过滤 |
+| `comfyui_list_workflows` | 列本地工作流名称，可按名字过滤，不带文件内容 |
+| `comfyui_build_workflow` | 按模型与参数搭一份基础 API 工作流，逐项过节点定义校验 |
+| `comfyui_save_workflow` | 把工作流另存为新文件；只新建，不覆盖 |
 | `comfyui_inspect_workflow` | 读工作流，区分 UI / API 格式，查节点与连接 |
 | `comfyui_plan_workflow_patch` | 对 API 工作流生成补丁计划，只改已存在的字段 |
 | `comfyui_submit_workflow` | 提交已通过校验的 API Prompt |
 | `comfyui_get_job` | 查任务状态、取输出图 |
 | `comfyui_start` | 打开启动器 / 启动后端 / 打开安装目录 / 打开 Web UI |
+
+### 用本地已有工作流，不用上传文件
+
+生图前只要说一个名字就够了，插件自己去 ComfyUI 的工作流目录里找：
+
+- 目录按 `<安装根>/user/default/workflows` → `<安装根>/workflows` → 配置里 `comfyui.workflowDirs` 的顺序看，不会去扫整块盘。
+- 名字可以不带 `.json`，大小写和 `-` `_` 空格之间的差别也认。
+- 同名的有多份时报候选（带路径），由你指定用哪份；找不到就报错并列出可用名字，绝不拿别的工作流顶替。
+- 只接受 API 格式。UI 格式能读能看结构，但不会自动转换，也不会被当成 API Prompt 提交。
+- 修改默认只在内存里的工作副本上做，原始文件不动；要落盘就走 `comfyui_save_workflow`，只新建不覆盖。
+
+改工作流时可以直接说"换成某个 checkpoint""把第一个 LoRA 降到 0.6""步数改成 30"，插件会把这句话翻成具体节点上的具体字段。工作流里有多个同类节点时它不猜，会带着候选回来问。
+
+`/object_info` 按节点名逐个取，命中缓存就不发请求；缓存默认 5 分钟（`comfyui.objectInfoTtlMs` 可调），换 ComfyUI 实例、节点定义对不上、或显式要求刷新时才重取。返回给对话的只有"节点在不在、必填项齐不齐、这次改的字段合不合法"，不把整份定义灌进去。
 
 几条同样硬性的边界：
 

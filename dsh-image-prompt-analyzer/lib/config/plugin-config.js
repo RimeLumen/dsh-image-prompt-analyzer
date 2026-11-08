@@ -6,6 +6,7 @@ import {
   DEFAULT_COMFY_BASE_URL,
   DEFAULT_COMFY_ENABLED,
   DEFAULT_COMFY_TIMEOUT_MS,
+  DEFAULT_OBJECT_INFO_TTL_MS,
   normalizeComfySettings,
 } from '../comfyui/index.js'
 
@@ -90,7 +91,9 @@ export const DEFAULT_PLUGIN_CONFIG = Object.freeze({
     installRoot: null,
     extraModelPathsConfigFiles: Object.freeze([]),
     additionalModelRoots: Object.freeze([]),
+    workflowDirs: Object.freeze([]),
     requestTimeoutMs: DEFAULT_COMFY_TIMEOUT_MS,
+    objectInfoTtlMs: DEFAULT_OBJECT_INFO_TTL_MS,
   }),
 })
 
@@ -181,6 +184,7 @@ export function resolvePluginConfig(raw, configFile = 'cordis.patch.yml (plugin 
     ['/python/timeout_seconds', merged.python.timeout_seconds, 1, 600],
     ['/trace/max_tasks', merged.trace?.max_tasks ?? 10, 1, 200],
     ['/comfyui/requestTimeoutMs', merged.comfyui?.requestTimeoutMs ?? DEFAULT_COMFY_TIMEOUT_MS, 1000, 600000],
+    ['/comfyui/objectInfoTtlMs', merged.comfyui?.objectInfoTtlMs ?? DEFAULT_OBJECT_INFO_TTL_MS, 1000, 86400000],
   ]
   for (const [field_path, value, min, max] of numericGuards) {
     if (!isNumberInRange(value, min, max)) {
@@ -308,7 +312,9 @@ export const PLUGIN_CONFIG_SCHEMA = Object.freeze({
         installRoot: { type: ['string', 'null'], minLength: 1 },
         extraModelPathsConfigFiles: { type: 'array', items: { type: 'string', minLength: 1 } },
         additionalModelRoots: { type: 'array', items: { type: 'string', minLength: 1 } },
+        workflowDirs: { type: 'array', items: { type: 'string', minLength: 1 } },
         requestTimeoutMs: { type: 'integer', minimum: 1000, maximum: 600000 },
+        objectInfoTtlMs: { type: 'integer', minimum: 1000, maximum: 86400000 },
       },
     },
   },
