@@ -1,5 +1,6 @@
 
 import { COMFY_CODES } from './errors.js'
+import { categoryNames } from './paths.js'
 import { enumOptionsOf } from './patch.js'
 
 // 四种状态各自独立记录，任何一个都不允许由另一个推导出来。
@@ -40,11 +41,22 @@ function normalizeRelative(value) {
  * 磁盘条目记的是相对扫描根的路径（`checkpoints/sd15.safetensors`），
  * 而 /models 与 loader 枚举给的是相对分类目录的路径（`sd15.safetensors`）。
  * 两边要能对上，就得把分类那一段去掉。去掉之后仍保留原路径用于回显。
+ *
+ * 分类那一段可能是别名目录：`clip/` 下的文件归 `text_encoders`，
+ * 而 `/models/text_encoders` 给的是裸文件名。只剥规范名会把这类文件
+ * 判成"运行时看不见"，同时还生出一条假的"磁盘不存在"虚拟项。
  */
 function withinCategory(entry) {
   const rel = normalizeRelative(entry.relative_path)
-  const category = normalizeRelative(entry.category)
-  if (category && rel.startsWith(`${category}/`)) return rel.slice(category.length + 1)
+  const prefixes = new Set()
+  for (const value of [...categoryNames(entry.category), entry.category_raw]) {
+    const prefix = normalizeRelative(value)
+    if (prefix !== '') prefixes.add(prefix)
+  }
+  // 长的先剥：`text_encoders` 比 `clip` 更具体，顺序固定下来，结果才可复现。
+  for (const prefix of [...prefixes].sort((a, b) => b.length - a.length)) {
+    if (rel.startsWith(`${prefix}/`)) return rel.slice(prefix.length + 1)
+  }
   return rel
 }
 

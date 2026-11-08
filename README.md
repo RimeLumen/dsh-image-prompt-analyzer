@@ -334,6 +334,14 @@ comfyui:
 
 所以「磁盘上有这个模型」不代表 ComfyUI 认得它（分类目录名和分类名不一定同名，`unet/` 会映射到 `diffusion_models`），「ComfyUI 认得」也不代表某个 loader 的下拉里能选到。反过来，`vae` 的枚举里有 `pixel_space`、`taesd` 这类**虚拟项**，它们不对应任何磁盘文件——这些单独放在 `virtual_entries` 里，不混进模型清单。
 
+分类统计有两套口径，分开给：
+
+- `categories`：磁盘上真实存在的分类目录（别名目录已归并，`clip/` 算 `text_encoders`）。这个字段的语义一直没变。
+- `runtime_categories`：`GET /models` 返回的运行时分类全集，可能远多于磁盘（自定义节点会注册自己的分类）。ComfyUI 连不上时是 `null`，不是空数组。
+- `category_summary`：两边取并集后逐类给数——`disk_files`、`runtime_files`、`runtime_only`、`empty`、`has_loader`。`runtime_files` 为 `null` 表示**不知道**（没连上、这个分类单独取不到、或者运行时压根没注册它），不是 0；把它写成 0 就等于替 ComfyUI 回答"你没有这个文件"。
+
+`virtual_entries` 相关有几个计数字段，含义不同：`virtual_total` 是本次范围内（受 `category` 过滤影响）的运行时独有条目数，`virtual_truncated` 表示超过 `VIRTUAL_LIMIT` 被截断，`virtual_skipped` 是被过滤规则挡掉的数量（**历史上把扩展名过滤和分类过滤合在一起算**，指定 `category` 时会包含别的分类的条目），`virtual_filtered_out` 只统计**被扩展名等过滤规则排除的数量**，与 `category` 参数无关（`custom_nodes` 这类目录型分类里全是 `.py`/`.pyc`，真机上这个数能上万）——它不代表跳过了多少个分类。四个字段都保留，旧字段语义没改。
+
 `execution_success` 只在 `/history` 明确说完成、没有执行错误、工作流结构和本次提交对得上、且输出里确实有能安全取回的图片时才会写。它**不写进任何本地数据库**：每次查询都从 ComfyUI 的 `/history` 重新推导，记录被 ComfyUI 清掉就没了——**不要把它当历史数据库**。
 
 ### 启动与打开

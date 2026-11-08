@@ -30,9 +30,9 @@ import {
   normalizeComfySettings,
   parseLoopbackBaseUrl,
 } from '../lib/comfyui/index.js'
-import { canonicalCategory, joinLikePython, parseModelPathsYaml } from '../lib/comfyui/paths.js'
+import { CATEGORY_ALIASES, canonicalCategory, categoryNames, joinLikePython, parseModelPathsYaml } from '../lib/comfyui/paths.js'
 import { scanModelRoots, scanRoot } from '../lib/comfyui/catalog.js'
-import { filterByStates, reconcileModels } from '../lib/comfyui/reconcile.js'
+import { CATEGORY_LOADERS, filterByStates, reconcileModels } from '../lib/comfyui/reconcile.js'
 import { assertLoopbackNotProxied, createComfyClient } from '../lib/comfyui/client.js'
 import { analyzeBindings, resolvePromptTarget } from '../lib/comfyui/bindings.js'
 import {
@@ -3590,5 +3590,322 @@ test('宿主没有 webServer 时退回 ComfyUI 原始地址，不假装能显示
     comfy.imageViewUrl({ filename: 'a.png', subfolder: '', type: 'output' }),
     'http://127.0.0.1:8188/view?filename=a.png&subfolder=&type=output',
   )
+  await comfy.dispose()
+})
+
+// ───────────────────────── MODEL-SCAN-FIX：别名对账与分类统计 ─────────────────────────
+// 这一段只证明本地对账逻辑正确。真实机器上 text_encoders / diffusion_models 的
+// 具体文件数另行只读核对，两者不能互相替代。
+
+/** 一个只有 models/ 下若干分类目录的最小安装。files 形如 { 'clip/clip_l.safetensors': 100 }。 */
+function modelsTree(install, files = {}, extraDirs = []) {
+  const tree = mergeTrees(installTree(install), { [`${install}\\models`]: { type: 'directory' } })
+  for (const dir of extraDirs) {
+    tree[`${install}\\models\\${dir.replace(/\//g, '\\')}`] = { type: 'directory' }
+  }
+  for (const [relative, size] of Object.entries(files)) {
+    const parts = relative.split('/')
+    for (let i = 1; i < parts.length; i += 1) {
+      tree[`${install}\\models\\${parts.slice(0, i).join('\\')}`] = { type: 'directory' }
+    }
+    tree[`${install}\\models\\${relative.replace(/\//g, '\\')}`] = { type: 'file', size }
+  }
+  return tree
+}
+
+function listModelsSpec(comfy) {
+  return createComfyToolSpecs({ getComfyUI: async () => comfy, logger: SILENT_LOGGER }).find(
+    (item) => item.name === 'comfyui_list_models',
+  )
+}
+
+test('clip 别名目录里的文件按 text_encoders 对账，不再判成运行时看不见', async () => {
+  const install = 'C:\\ComfyUI'
+  const fs = createMemoryFs({
+    tree: modelsTree(install, {
+      'clip/clip_l.safetensors': 100,
+      'clip/t5xxl_fp16.safetensors': 100,
+      'text_encoders/qwen_3_06b_base.safetensors': 100,
+    }),
+  })
+  const fake = createFakeFetch({
+    '/models': () => ['text_encoders'],
+    '/models/text_encoders': () => ['clip_l.safetensors', 't5xxl_fp16.safetensors', 'qwen_3_06b_base.safetensors'],
+    '/object_info/CLIPLoader': () => ({
+      CLIPLoader: {
+        input: {
+          required: {
+            clip_name: [['clip_l.safetensors', 't5xxl_fp16.safetensors', 'qwen_3_06b_base.safetensors'], {}],
+          },
+        },
+      },
+    }),
+  })
+  const comfy = createComfyRuntime({
+    ctx: { fs },
+    pluginConfig: { comfyui: { enabled: true, autoDetect: false, installRoot: install, baseUrl: 'http://127.0.0.1:8188' } },
+    logger: SILENT_LOGGER,
+    fetchImpl: fake.fetchImpl,
+  })
+  const result = await listModelsSpec(comfy).execute({ category: 'text_encoders', limit: 20 }, {})
+
+  assert.equal(result.total, 3, JSON.stringify(result.diagnostics))
+  // 别名目录里的两个文件要按"相对分类目录的路径"参与对账，否则永远对不上裸文件名。
+  for (const entry of result.entries) {
+    assert.equal(entry.states.runtime_visible, 'true', entry.relative_path)
+    assert.equal(entry.states.loader_selectable, 'true', entry.relative_path)
+    assert.equal(entry.states.disk_present, 'true')
+  }
+  // 修复前这里会多出两条"磁盘不存在"的虚拟项，指向同一批文件。
+  assert.deepEqual(result.virtual_entries, [])
+  assert.equal(result.virtual_total, 0)
+  await comfy.dispose()
+})
+
+test('unet 别名目录同理，diffusion_models 不再把磁盘文件当虚拟项', async () => {
+  const install = 'C:\\ComfyUI'
+  const fs = createMemoryFs({
+    tree: modelsTree(install, {
+      'unet/flux1-dev-fp8.safetensors': 100,
+      'diffusion_models/moss_image_base_bf16.safetensors': 100,
+    }),
+  })
+  const fake = createFakeFetch({
+    '/models': () => ['diffusion_models'],
+    '/models/diffusion_models': () => ['flux1-dev-fp8.safetensors', 'moss_image_base_bf16.safetensors'],
+    '/object_info/UNETLoader': () => ({
+      UNETLoader: {
+        input: {
+          required: { unet_name: [['flux1-dev-fp8.safetensors', 'moss_image_base_bf16.safetensors'], {}] },
+        },
+      },
+    }),
+  })
+  const comfy = createComfyRuntime({
+    ctx: { fs },
+    pluginConfig: { comfyui: { enabled: true, autoDetect: false, installRoot: install, baseUrl: 'http://127.0.0.1:8188' } },
+    logger: SILENT_LOGGER,
+    fetchImpl: fake.fetchImpl,
+  })
+  const result = await listModelsSpec(comfy).execute({ category: 'diffusion_models', limit: 20 }, {})
+
+  assert.equal(result.total, 2)
+  assert.deepEqual(
+    result.entries.map((entry) => [entry.name, entry.states.runtime_visible]).sort(),
+    [
+      ['flux1-dev-fp8.safetensors', 'true'],
+      ['moss_image_base_bf16.safetensors', 'true'],
+    ],
+  )
+  assert.deepEqual(result.virtual_entries, [])
+  await comfy.dispose()
+})
+
+test('别名反查只认 CATEGORY_ALIASES 这一张表，正查反查结论一致', () => {
+  for (const [alias, canonical] of Object.entries(CATEGORY_ALIASES)) {
+    assert.equal(canonicalCategory(alias), canonical)
+    const names = categoryNames(canonical)
+    assert.ok(names.includes(alias), `${canonical} 没反查到 ${alias}`)
+    assert.ok(names.includes(canonical))
+    // 拿别名去反查，结果要和拿规范名反查完全一样：两个入口指向同一张表。
+    assert.deepEqual([...categoryNames(alias)].sort(), [...names].sort())
+  }
+  // 没有别名的分类只回自己，不凭空造出第二个名字。
+  assert.deepEqual(categoryNames('checkpoints'), ['checkpoints'])
+  assert.deepEqual(categoryNames(''), [])
+})
+
+test('没有 loader 映射的分类照样扫描，loader_selectable 停在 unknown 而不是 false', async () => {
+  const install = 'C:\\ComfyUI'
+  const fs = createMemoryFs({ tree: modelsTree(install, { 'embeddings/foo.pt': 100 }) })
+  const fake = createFakeFetch({
+    '/models': () => ['embeddings'],
+    '/models/embeddings': () => ['foo.pt'],
+  })
+  const comfy = createComfyRuntime({
+    ctx: { fs },
+    pluginConfig: { comfyui: { enabled: true, autoDetect: false, installRoot: install, baseUrl: 'http://127.0.0.1:8188' } },
+    logger: SILENT_LOGGER,
+    fetchImpl: fake.fetchImpl,
+  })
+  const result = await listModelsSpec(comfy).execute({ category: 'embeddings', limit: 20 }, {})
+
+  assert.equal(result.total, 1)
+  assert.equal(result.entries[0].states.runtime_visible, 'true')
+  // 没有映射的分类算不出"能不能选"，只能停在 unknown——问不问别的节点是另一回事。
+  assert.equal(result.entries[0].states.loader_selectable, 'unknown')
+  const summary = result.category_summary.find((item) => item.category === 'embeddings')
+  assert.equal(summary.has_loader, false)
+  assert.equal(summary.runtime_files, 1)
+  // 问过的节点必须全部来自映射表，不能为了 embeddings 临时编一个 loader 出来。
+  const mapped = new Set(Object.values(CATEGORY_LOADERS).map((item) => item.node))
+  const asked = fake.calls.filter((call) => call.pathname.startsWith('/object_info/'))
+  assert.ok(asked.length > 0)
+  for (const call of asked) {
+    const node = call.pathname.slice('/object_info/'.length)
+    assert.ok(mapped.has(node), `问了映射表里没有的节点 ${node}`)
+  }
+  await comfy.dispose()
+})
+
+test('空分类目录仍然出现在分类列表里，文件数为零', async () => {
+  const install = 'C:\\ComfyUI'
+  const fs = createMemoryFs({ tree: modelsTree(install, {}, ['kgen', 'checkpoints']) })
+  const fake = createFakeFetch({
+    '/models': () => ['checkpoints'],
+    '/models/checkpoints': () => [],
+  })
+  const comfy = createComfyRuntime({
+    ctx: { fs },
+    pluginConfig: { comfyui: { enabled: true, autoDetect: false, installRoot: install, baseUrl: 'http://127.0.0.1:8188' } },
+    logger: SILENT_LOGGER,
+    fetchImpl: fake.fetchImpl,
+  })
+  const result = await listModelsSpec(comfy).execute({ limit: 20 }, {})
+
+  assert.ok(result.categories.includes('kgen'))
+  assert.equal(result.total, 0)
+  const empty = result.category_summary.find((item) => item.category === 'kgen')
+  assert.equal(empty.disk_files, 0)
+  assert.equal(empty.empty, true)
+  // 磁盘上没有、运行时也没有的目录，运行时文件数是"不知道"，不是 0。
+  assert.equal(empty.runtime_files, null)
+  await comfy.dispose()
+})
+
+test('多层子目录里的模型按相对分类目录的路径对账', async () => {
+  const install = 'C:\\ComfyUI'
+  const fs = createMemoryFs({ tree: modelsTree(install, { 'diffusion_models/moss/moss_image_base_bf16.safetensors': 100 }) })
+  const fake = createFakeFetch({
+    '/models': () => ['diffusion_models'],
+    // 真实实例给的是带反斜杠的相对路径，不是裸文件名。
+    '/models/diffusion_models': () => ['moss\\moss_image_base_bf16.safetensors'],
+    '/object_info/UNETLoader': () => ({
+      UNETLoader: {
+        input: { required: { unet_name: [['moss\\moss_image_base_bf16.safetensors'], {}] } },
+      },
+    }),
+  })
+  const comfy = createComfyRuntime({
+    ctx: { fs },
+    pluginConfig: { comfyui: { enabled: true, autoDetect: false, installRoot: install, baseUrl: 'http://127.0.0.1:8188' } },
+    logger: SILENT_LOGGER,
+    fetchImpl: fake.fetchImpl,
+  })
+  const result = await listModelsSpec(comfy).execute({ category: 'diffusion_models', limit: 20 }, {})
+
+  assert.equal(result.total, 1)
+  assert.equal(result.entries[0].states.runtime_visible, 'true')
+  assert.equal(result.entries[0].states.loader_selectable, 'true')
+  await comfy.dispose()
+})
+
+test('未知分类不猜 loader，四态里只有磁盘那条是确定的', async () => {
+  const install = 'C:\\ComfyUI'
+  const fs = createMemoryFs({ tree: modelsTree(install, { 'reactor/faces/x.onnx': 100 }) })
+  const fake = createFakeFetch({
+    // 运行时压根没注册这个分类：无从得知它会不会认这个文件。
+    '/models': () => [],
+  })
+  const comfy = createComfyRuntime({
+    ctx: { fs },
+    pluginConfig: { comfyui: { enabled: true, autoDetect: false, installRoot: install, baseUrl: 'http://127.0.0.1:8188' } },
+    logger: SILENT_LOGGER,
+    fetchImpl: fake.fetchImpl,
+  })
+  const result = await listModelsSpec(comfy).execute({ category: 'reactor', limit: 20 }, {})
+
+  assert.equal(result.total, 1)
+  const states = result.entries[0].states
+  assert.equal(states.disk_present, 'true')
+  assert.equal(states.runtime_visible, 'unknown')
+  assert.equal(states.loader_selectable, 'unknown')
+  assert.equal(states.execution_success, 'unknown')
+  const summary = result.category_summary.find((item) => item.category === 'reactor')
+  assert.equal(summary.runtime_files, null)
+  assert.equal(summary.has_loader, false)
+  await comfy.dispose()
+})
+
+test('单个分类 404 只影响它自己，别的分类照常对账', async () => {
+  const install = 'C:\\ComfyUI'
+  const fs = createMemoryFs({
+    tree: modelsTree(install, { 'checkpoints/a.safetensors': 100, 'text_encoders/b.safetensors': 100 }),
+  })
+  const fake = createFakeFetch({
+    '/models': () => ['checkpoints', 'text_encoders'],
+    // /models/checkpoints 故意不给路由：fake 会回 404，客户端记为 missing。
+    '/models/text_encoders': () => ['b.safetensors'],
+  })
+  const comfy = createComfyRuntime({
+    ctx: { fs },
+    pluginConfig: { comfyui: { enabled: true, autoDetect: false, installRoot: install, baseUrl: 'http://127.0.0.1:8188' } },
+    logger: SILENT_LOGGER,
+    fetchImpl: fake.fetchImpl,
+  })
+  const result = await listModelsSpec(comfy).execute({ limit: 20 }, {})
+
+  assert.equal(result.runtime_available, true)
+  assert.equal(result.total, 2)
+  const byName = new Map(result.entries.map((entry) => [entry.name, entry.states]))
+  assert.equal(byName.get('a.safetensors').runtime_visible, 'unknown')
+  assert.equal(byName.get('b.safetensors').runtime_visible, 'true')
+  const summary = new Map(result.category_summary.map((item) => [item.category, item]))
+  assert.equal(summary.get('checkpoints').runtime_files, null)
+  assert.equal(summary.get('text_encoders').runtime_files, 1)
+  // 404 是"这个分类没有"，不是错误，不该刷出 error 级诊断。
+  assert.ok(!result.diagnostics.some((item) => item.severity === 'error'))
+  await comfy.dispose()
+})
+
+test('API 不可达时磁盘扫描照常，运行时文件数是 null 而不是 0', async () => {
+  const install = 'C:\\ComfyUI'
+  const fs = createMemoryFs({ tree: modelsTree(install, { 'checkpoints/a.safetensors': 100 }) })
+  const comfy = createComfyRuntime({
+    ctx: { fs },
+    pluginConfig: { comfyui: { enabled: true, autoDetect: false, installRoot: install, baseUrl: 'http://127.0.0.1:8188' } },
+    logger: SILENT_LOGGER,
+    fetchImpl: async () => {
+      throw new Error('ECONNREFUSED')
+    },
+  })
+  const result = await listModelsSpec(comfy).execute({ limit: 20 }, {})
+
+  assert.equal(result.runtime_available, false)
+  assert.equal(result.total, 1)
+  assert.equal(result.entries[0].states.runtime_visible, 'unknown')
+  assert.equal(result.runtime_categories, null)
+  const summary = result.category_summary.find((item) => item.category === 'checkpoints')
+  // 写成 0 就等于替 ComfyUI 回答"你没有这个文件"，实际只是没连上。
+  assert.equal(summary.runtime_files, null)
+  assert.equal(summary.disk_files, 1)
+  assert.ok(result.diagnostics.some((item) => item.error_code === COMFY_CODES.CAPABILITY_UNAVAILABLE))
+  await comfy.dispose()
+})
+
+test('输出被 limit 截断时，total 仍是真实总数', async () => {
+  const install = 'C:\\ComfyUI'
+  const files = {}
+  for (let i = 0; i < 5; i += 1) files[`checkpoints/m${i}.safetensors`] = 100
+  const fs = createMemoryFs({ tree: modelsTree(install, files) })
+  const fake = createFakeFetch({
+    '/models': () => ['checkpoints'],
+    '/models/checkpoints': () => ['m0.safetensors', 'm1.safetensors', 'm2.safetensors', 'm3.safetensors', 'm4.safetensors'],
+  })
+  const comfy = createComfyRuntime({
+    ctx: { fs },
+    pluginConfig: { comfyui: { enabled: true, autoDetect: false, installRoot: install, baseUrl: 'http://127.0.0.1:8188' } },
+    logger: SILENT_LOGGER,
+    fetchImpl: fake.fetchImpl,
+  })
+  const result = await listModelsSpec(comfy).execute({ limit: 2 }, {})
+
+  assert.equal(result.total, 5)
+  assert.equal(result.returned, 2)
+  assert.equal(result.entries.length, 2)
+  const summary = result.category_summary.find((item) => item.category === 'checkpoints')
+  // 分类统计看的是全集，不受 limit 影响。
+  assert.equal(summary.disk_files, 5)
+  assert.equal(summary.runtime_files, 5)
   await comfy.dispose()
 })

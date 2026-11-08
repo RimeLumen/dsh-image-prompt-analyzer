@@ -150,6 +150,25 @@ export function canonicalCategory(raw) {
   return CATEGORY_ALIASES[key] ?? key
 }
 
+/**
+ * 反向查别名：给定一个分类名，返回指向同一分类的所有名字（含它自己）。
+ *
+ * 磁盘扫描出来的条目可能落在别名目录里（`clip/` 下的文件归 `text_encoders`），
+ * 而 /models 与 loader 枚举给的是相对分类目录的路径。两边要对账，就必须知道
+ * 这个分类还叫过什么名字。别名表只有 CATEGORY_ALIASES 一份，这里只做反查，
+ * 不在别处另抄一张表——两张表迟早会走岔。
+ */
+export function categoryNames(raw) {
+  const key = String(raw ?? '')
+  if (key === '') return []
+  const canonical = canonicalCategory(key)
+  const names = new Set([canonical, key])
+  for (const [alias, target] of Object.entries(CATEGORY_ALIASES)) {
+    if (target === canonical) names.add(alias)
+  }
+  return [...names]
+}
+
 function yamlError(message, extra = {}) {
   return new ComfyError(COMFY_CODES.VALIDATION_FAILED, message)
 }

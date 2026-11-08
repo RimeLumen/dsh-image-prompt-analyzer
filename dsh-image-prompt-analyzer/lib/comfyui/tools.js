@@ -117,6 +117,51 @@ function presentationImages(attachments, images) {
     }))
 }
 
+/**
+ * 分类视角的统计：磁盘扫到的分类与运行时列出的分类是两套集合。
+ * 只报其中一套，用户就问不出"到底漏没漏"——所以这里并集后逐类给数，
+ * 数据全部来自已经取到的扫描与对账结果，不额外发请求。
+ *
+ * runtime_files 为 null 表示"不知道"，不是"零个"：API 不可用、单分类取不到、
+ * 或该分类压根没在 /models 里注册，都无从得知运行时到底有几个文件。
+ */
+function summarizeCategories({
+  diskCategories = [],
+  runtimeCategories = [],
+  runtimeFiles = null,
+  entries = [],
+  virtual = [],
+  runtimeAvailable = false,
+} = {}) {
+  const diskCounts = new Map()
+  for (const entry of entries) {
+    if (!entry?.category || entry.known_format === false) continue
+    diskCounts.set(entry.category, (diskCounts.get(entry.category) ?? 0) + 1)
+  }
+
+  const runtimeOnlyCounts = new Map()
+  for (const item of virtual) {
+    const looksLikeModel =
+      item?.virtual === true || KNOWN_MODEL_EXTENSIONS.includes(extensionOf(item?.name))
+    if (!looksLikeModel) continue
+    runtimeOnlyCounts.set(item.category, (runtimeOnlyCounts.get(item.category) ?? 0) + 1)
+  }
+
+  const names = new Set([...diskCategories, ...runtimeCategories])
+  return [...names].sort().map((category) => {
+    const diskFiles = diskCounts.get(category) ?? 0
+    const listed = runtimeAvailable && runtimeFiles && Array.isArray(runtimeFiles[category])
+    return {
+      category,
+      disk_files: diskFiles,
+      runtime_files: listed ? runtimeFiles[category].length : null,
+      runtime_only: runtimeOnlyCounts.get(category) ?? 0,
+      empty: diskFiles === 0,
+      has_loader: Object.prototype.hasOwnProperty.call(CATEGORY_LOADERS, category),
+    }
+  })
+}
+
 function expandDetails(error) {
   const details = Array.isArray(error?.details) ? error.details : []
   return details.map((item) =>
@@ -242,10 +287,12 @@ export function createComfyToolSpecs(runtime) {
         let runtimeAvailable = false
         let models = null
         let loaderEnums = null
+        let runtimeIndex = null
         const runtimeDiagnostics = []
         try {
           const client = comfy.getClient()
           const index = await client.getModels({ signal: args.signal })
+          runtimeIndex = index
           // reconcile 要的是"分类 -> 文件名数组"，client 已经把分类列表摊平好了。
           models = index.files
           runtimeAvailable = true
@@ -307,13 +354,13 @@ export function createComfyToolSpecs(runtime) {
         const limit = args.limit ?? 200
         // 运行时分类里有 custom_nodes / configs 这类按目录列举的分类，条目能上万条，
         // 里面绝大多数是 .py/.pyc/.md，不是模型。先按扩展名收一遍，再截断并如实报总数。
-        const virtualAll = reconciled.virtual.filter(
-          (item) =>
-            (item.virtual || KNOWN_MODEL_EXTENSIONS.includes(extensionOf(item.name))) &&
-            (!categoryFilter || item.category === categoryFilter),
+        const virtualKnown = reconciled.virtual.filter(
+          (item) => item.virtual || KNOWN_MODEL_EXTENSIONS.includes(extensionOf(item.name)),
         )
+        const virtualAll = virtualKnown.filter((item) => !categoryFilter || item.category === categoryFilter)
         const virtualTotal = virtualAll.length
         const virtualEntries = virtualAll.slice(0, VIRTUAL_LIMIT)
+        const runtimeCategories = runtimeAvailable && runtimeIndex ? runtimeIndex.categories : null
         return {
           total: entries.length,
           returned: Math.min(limit, entries.length),
@@ -322,8 +369,20 @@ export function createComfyToolSpecs(runtime) {
           virtual_total: virtualTotal,
           virtual_truncated: virtualTotal > VIRTUAL_LIMIT,
           virtual_skipped: reconciled.virtual.length - virtualTotal,
+          // 与 virtual_skipped 同源，但语义写清楚：这是被扩展名等规则挡掉的运行时独有条目，
+          // 不是"跳过了多少个分类"。两者并存，旧调用方不用改。
+          virtual_filtered_out: reconciled.virtual.length - virtualKnown.length,
           non_model_skipped: nonModelSkipped,
           categories: scanned.categories,
+          runtime_categories: runtimeCategories,
+          category_summary: summarizeCategories({
+            diskCategories: scanned.categories,
+            runtimeCategories: runtimeCategories ?? [],
+            runtimeFiles: models,
+            entries: reconciled.entries,
+            virtual: reconciled.virtual,
+            runtimeAvailable,
+          }),
           roots: scanned.roots,
           partial: scanned.partial,
           runtime_available: runtimeAvailable,
