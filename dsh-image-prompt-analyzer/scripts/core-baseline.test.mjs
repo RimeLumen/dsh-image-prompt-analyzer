@@ -73,7 +73,15 @@ import {
   probeComfyDirectories,
 } from '../lib/comfyui/discovery.js'
 import { createComfyToolSpecs } from '../lib/comfyui/tools.js'
-import { listWorkflows, resolveWorkflowByName, workflowRoots } from '../lib/comfyui/workflows.js'
+import {
+  detectActiveUser,
+  isAbsolutePath,
+  listWorkflows,
+  resolveWorkflowByName,
+  workflowRoots,
+  workflowUserRoot,
+} from '../lib/comfyui/workflows.js'
+import { architectureInPrompt, resolveModelArchitecture } from '../lib/comfyui/loader-architecture.js'
 import { createObjectInfoCache, fetchNodeInfos } from '../lib/comfyui/object-info.js'
 import { buildWorkflow, classesInPrompt, validateBuiltWorkflow } from '../lib/comfyui/build.js'
 import { ROLE_VALUES, resolveSemanticChanges } from '../lib/comfyui/edits.js'
@@ -4586,12 +4594,14 @@ test('新建工作流走运行时校验时，节点定义按类名逐项取到�
   assert.equal(built.validation.ok, true, JSON.stringify(built.validation.problems))
   assert.deepEqual(built.validation.problems, [])
   assert.deepEqual(built.missing, [])
-  assert.equal(calls.length, 6)
+  // 六个节点 + UNETLoader：判断"该走哪条加载路径"要两个 Loader 的枚举同时在场，
+  // checkpoint 工作流里本来没有 UNETLoader，得额外问一次。
+  assert.equal(calls.length, 7)
 
   // 同一个实例再搭一次：节点定义全在缓存里，不该再发请求。
   const again = await comfy.buildLocalWorkflow({ positive: 'a girl', checkpoint: 'wai.safetensors' })
   assert.equal(again.validation.ok, true)
-  assert.equal(calls.length, 6)
+  assert.equal(calls.length, 7)
 
   await comfy.dispose()
 })
@@ -4659,5 +4669,311 @@ test('另存工作流只新建不覆盖，文件名带路径分隔符会被拒',
   // 两次失败都没有产生新的写入，原始工作流也没被就地改写。
   assert.equal(fs.writes.length, 1)
   assert.equal(JSON.parse(fs.writes[0].content)['1'].inputs.ckpt_name, 'waiIllustriousSDXL_v140.safetensors')
+  await comfy.dispose()
+})
+
+
+// ───── 工作流路由：目录跟实例走、builder 要授权、模型按 Loader 归位 ─────
+
+test('工作流目录跟着当前实例的启动参数推导，不写死任何一台机器的路径', () => {
+  // --user-directory 是绝对路径覆盖，直接换掉 <base>/user。
+  const byUser = workflowUserRoot({
+    installRoot: 'D:\\ComfyUI',
+    launch: { user_directory: 'E:\\comfy-user', base_directory: 'D:\\base', multi_user: false },
+  })
+  assert.equal(byUser.path, 'E:\\comfy-user')
+  assert.equal(byUser.source, 'arg_user_directory')
+
+  // --base-directory 换的是 <base>，user 跟着走。
+  const byBase = workflowUserRoot({ installRoot: 'D:\\ComfyUI', launch: { base_directory: 'F:\\shared' } })
+  assert.equal(byBase.path, 'F:\\shared\\user')
+  assert.equal(byBase.source, 'arg_base_directory')
+
+  // 两个都没有才退回安装根——这一步不碰磁盘，也不去找别的盘。
+  const byInstall = workflowUserRoot({ installRoot: 'D:\\ComfyUI' })
+  assert.equal(byInstall.path, 'D:\\ComfyUI\\user')
+  assert.equal(byInstall.source, 'install_root')
+
+  // 相对路径不当覆盖用：它的含义取决于进程 cwd，猜不得。
+  assert.equal(isAbsolutePath('user'), false)
+  assert.equal(isAbsolutePath('D:\\user'), true)
+  assert.equal(isAbsolutePath('\\\\nas\\share'), true)
+  assert.equal(isAbsolutePath('/home/u'), true)
+  assert.equal(
+    workflowUserRoot({ installRoot: 'D:\\ComfyUI', launch: { user_directory: 'user' } }).source,
+    'install_root',
+  )
+})
+
+test('主根是当前用户目录下的 workflows，老整合包目录只当次要根', () => {
+  const roots = workflowRoots({
+    installRoot: 'D:\\ComfyUI',
+    launch: { base_directory: 'E:\\data' },
+    userId: 'alice',
+    workflowDirs: ['E:\\data\\user\\alice\\workflows', 'G:\\extra\\'],
+  })
+  assert.equal(roots.length, 3)
+  assert.equal(roots[0].path, 'E:\\data\\user\\alice\\workflows')
+  assert.equal(roots[0].primary, true)
+  assert.equal(roots[0].source, 'arg_base_directory')
+  assert.equal(roots[0].user_id, 'alice')
+  assert.equal(roots[1].path, 'D:\\ComfyUI\\workflows')
+  assert.equal(roots[1].source, 'install-legacy')
+  assert.equal(roots[1].primary, false)
+  // 配置里重复登记了主根，不该出现第二遍；只留真正额外的那个。
+  assert.equal(roots[2].path, 'G:\\extra')
+  assert.equal(roots[2].source, 'config')
+
+  // 没给 userId 时按单用户环境的 default 走。
+  const single = workflowRoots({ installRoot: 'D:\\ComfyUI' })
+  assert.equal(single[0].path, 'D:\\ComfyUI\\user\\default\\workflows')
+  assert.equal(single[0].user_id, 'default')
+})
+
+test('多用户环境要认出实际用户，认不出就报歧义而不是假定 default', async () => {
+  const root = 'E:\\comfy-user'
+  const many = createMemoryFs({
+    tree: {
+      [root]: { type: 'directory' },
+      [`${root}\\alice`]: { type: 'directory' },
+      [`${root}\\bob`]: { type: 'directory' },
+      // 系统用户（__ 前缀）走内部通道，不该被当成可选用户。
+      [`${root}\\__system__`]: { type: 'directory' },
+      [`${root}\\notes.txt`]: { type: 'file', size: 12 },
+    },
+  })
+  const ambiguous = await detectActiveUser(many, root)
+  assert.equal(ambiguous.ambiguous, true)
+  assert.deepEqual(ambiguous.candidates, ['alice', 'bob'])
+
+  // 只有一个用户时不用问。
+  const one = createMemoryFs({
+    tree: { [root]: { type: 'directory' }, [`${root}\\alice`]: { type: 'directory' } },
+  })
+  assert.equal((await detectActiveUser(one, root)).user_id, 'alice')
+
+  // 有 default 就用 default：单用户装出来的目录就长这样。
+  const withDefault = createMemoryFs({
+    tree: {
+      [root]: { type: 'directory' },
+      [`${root}\\default`]: { type: 'directory' },
+      [`${root}\\alice`]: { type: 'directory' },
+    },
+  })
+  assert.equal((await detectActiveUser(withDefault, root)).user_id, 'default')
+
+  // 一个用户目录都没有时不报错，退回 default。
+  const empty = createMemoryFs({ tree: { [root]: { type: 'directory' } } })
+  assert.equal((await detectActiveUser(empty, root)).user_id, 'default')
+})
+
+test('模型该用哪个 Loader 看枚举与目录，不看文件名里写了什么', () => {
+  const enums = {
+    checkpoint: ['waiIllustriousSDXL_v140.safetensors'],
+    unet: ['flux1-dev-fp8.safetensors', 'moss\\anima_fp8.safetensors'],
+  }
+
+  // 磁盘分类说它在 checkpoints，枚举说它在 unet：以 ComfyUI 自己的枚举为准。
+  const byEnum = resolveModelArchitecture({
+    model: 'flux1-dev-fp8.safetensors',
+    category: 'checkpoints',
+    loaderEnums: enums,
+  })
+  assert.equal(byEnum.architecture, 'unet')
+  assert.equal(byEnum.node, 'UNETLoader')
+  assert.equal(byEnum.evidence, 'loader_enum')
+
+  // 名字里带 anima 但枚举说它在 checkpoints 里——照枚举，不照名字。
+  const named = resolveModelArchitecture({
+    model: 'waiIllustriousSDXL_v140.safetensors',
+    category: null,
+    loaderEnums: enums,
+  })
+  assert.equal(named.architecture, 'checkpoint')
+  assert.equal(named.node, 'CheckpointLoaderSimple')
+
+  // 子目录前缀的反斜杠与正斜杠是同一个文件。
+  const subdir = resolveModelArchitecture({ model: 'moss/anima_fp8.safetensors', loaderEnums: enums })
+  assert.equal(subdir.architecture, 'unet')
+
+  // 两个枚举里都有：不猜，把两条都当候选。
+  const both = resolveModelArchitecture({
+    model: 'same.safetensors',
+    loaderEnums: { checkpoint: ['same.safetensors'], unet: ['same.safetensors'] },
+  })
+  assert.equal(both.architecture, null)
+  assert.equal(both.evidence, 'ambiguous')
+
+  // 枚举里没有，但磁盘分类明确：给架构，同时把依据标弱。
+  const byDisk = resolveModelArchitecture({ model: 'x.safetensors', category: 'diffusion_models', loaderEnums: {} })
+  assert.equal(byDisk.architecture, 'unet')
+  assert.equal(byDisk.evidence, 'disk_category')
+
+  // 什么依据都没有就是不知道。
+  const unknown = resolveModelArchitecture({ model: 'x.safetensors' })
+  assert.equal(unknown.architecture, null)
+  assert.equal(unknown.evidence, 'unknown')
+
+  assert.equal(architectureInPrompt({ 1: { class_type: 'CheckpointLoaderSimple' } }), 'checkpoint')
+  assert.equal(architectureInPrompt({ 1: { class_type: 'UNETLoader' } }), 'unet')
+  assert.equal(
+    architectureInPrompt({ 1: { class_type: 'UNETLoader' }, 2: { class_type: 'CheckpointLoaderSimple' } }),
+    'mixed',
+  )
+  assert.equal(architectureInPrompt({}), null)
+})
+
+test('默认工作流目录不存在时只报不存在，不换到别的盘去找', async () => {
+  // 只有安装根，user 目录一个都没有：这是整合包没跑过的常态，不是错误。
+  const fs = createMemoryFs({ tree: installTree(WF_INSTALL) })
+  const roots = workflowRoots({ installRoot: WF_INSTALL })
+  const listing = await listWorkflows(fs, roots)
+
+  assert.deepEqual(listing.items, [])
+  assert.equal(listing.partial, false, '目录不存在不该算部分失败')
+  assert.deepEqual(listing.diagnostics, [])
+  assert.equal(listing.roots.every((root) => root.exists === false), true)
+  // 没有列过任何目录，等于没去别处找。
+  assert.equal(fs.stats.listCalls, 0)
+})
+
+test('工作流目录里的符号链接指到根外面时被跳过，不会跟出去', async () => {
+  const tree = workflowTree({ 'portrait_flux.json': sampleApiWorkflow() })
+  tree['C:/outside/secret.json'] = { type: 'file', size: 64, text: JSON.stringify(sampleApiWorkflow()) }
+  const fs = createMemoryFs({
+    tree,
+    symlinks: { [`${WF_DIR}/escape.json`]: 'C:/outside/secret.json' },
+  })
+
+  const listing = await listWorkflows(fs, workflowRoots({ installRoot: WF_INSTALL }))
+  assert.deepEqual(listing.items.map((item) => item.name), ['portrait_flux.json'])
+  assert.equal(listing.partial, true)
+  const escapeNote = listing.diagnostics.find((item) => item.message.includes('escape.json'))
+  assert.ok(escapeNote, '越界的链接必须留下一条诊断，不能悄悄跳过')
+  assert.equal(escapeNote.error_code, COMFY_CODES.SCAN_PARTIAL)
+  assert.match(escapeNote.message, /根之外/)
+})
+
+test('没有用户明确授权时，新建工作流会被挡住，连参数都不往下传', async () => {
+  const { comfy } = comfyWithFs(workflowTree({ 'portrait_flux.json': sampleApiWorkflow() }))
+  const specs = createComfyToolSpecs({ getComfyUI: async () => comfy, logger: SILENT_LOGGER })
+  const build = specs.find((item) => item.name === 'comfyui_build_workflow')
+
+  const refused = await build.execute({ positive: '1girl, solo', checkpoint: 'wai.safetensors' }, {})
+  assert.equal(refused.status, 'failed')
+  assert.equal(refused.diagnostics[0].error_code, COMFY_CODES.CAPABILITY_UNAVAILABLE)
+  assert.match(refused.diagnostics[0].message, /明确授权/)
+  // 提示必须指向"先用本地工作流"，否则等于把人往 builder 上推。
+  assert.match(refused.diagnostics[0].suggested_fix, /comfyui_list_workflows/)
+  assert.match(refused.diagnostics[0].suggested_fix, /comfyui_plan_workflow_patch/)
+
+  // 带上授权后闸门放行：这次是"缺 positive"这类真实参数错误，不再是授权问题。
+  const allowed = await build.execute(
+    { reason: 'user_requested_new_workflow', checkpoint: 'wai.safetensors' },
+    {},
+  )
+  assert.equal(allowed.status, 'failed')
+  assert.notEqual(allowed.diagnostics[0].error_code, COMFY_CODES.CAPABILITY_UNAVAILABLE)
+  assert.match(allowed.diagnostics[0].message, /positive/)
+  await comfy.dispose()
+})
+
+test('从本地工作流改到提交：提交的是改过的副本，只发一次 POST', async () => {
+  const original = sampleApiWorkflow()
+  const posted = []
+  // 枚举里得真有这个模型；换成枚举外的名字，校验本来就该拒，那是另一条用例。
+  const objectInfo = {
+    ...BUILD_OBJECT_INFO,
+    CheckpointLoaderSimple: nodeInfo({ ckpt_name: [['waiIllustriousSDXL_v140.safetensors'], {}] }),
+  }
+  const routes = {}
+  for (const [classType, info] of Object.entries(objectInfo)) {
+    routes[`/object_info/${classType}`] = () => ({ [classType]: info })
+  }
+  routes['/prompt'] = (init) => {
+    posted.push(JSON.parse(init.body))
+    return { prompt_id: '4f730c70-07c9-4a74-9a31-ca563fc09beb', number: 1, node_errors: {} }
+  }
+
+  const fs = createMemoryFs({ tree: workflowTree({ 'portrait_flux.json': original }) })
+  const fake = createFakeFetch(routes)
+  const comfy = createComfyRuntime({
+    ctx: { fs },
+    pluginConfig: { comfyui: { enabled: true, installRoot: WF_INSTALL } },
+    logger: SILENT_LOGGER,
+    fetchImpl: fake.fetchImpl,
+  })
+  const specs = createComfyToolSpecs({ getComfyUI: async () => comfy, logger: SILENT_LOGGER })
+  const plan = specs.find((item) => item.name === 'comfyui_plan_workflow_patch')
+  const submit = specs.find((item) => item.name === 'comfyui_submit_workflow')
+
+  const planResult = await plan.execute(
+    {
+      workflow_name: 'portrait_flux',
+      changes: [
+        { role: 'checkpoint', value: 'waiIllustriousSDXL_v140.safetensors' },
+        { role: 'sampler', field: 'steps', value: 30 },
+      ],
+    },
+    {},
+  )
+  assert.equal(planResult.changed_nodes.length, 2)
+  assert.equal(planResult.prompt['1'].inputs.ckpt_name, 'waiIllustriousSDXL_v140.safetensors')
+  assert.equal(planResult.prompt['5'].inputs.steps, 30)
+
+  const submitResult = await submit.execute({ workflow: planResult.prompt }, {})
+  assert.equal(submitResult.state, 'accepted')
+  assert.equal(submitResult.prompt_id, '4f730c70-07c9-4a74-9a31-ca563fc09beb')
+
+  // 只发一次 POST：一次任务就是一次。
+  const posts = fake.calls.filter((call) => call.method === 'POST')
+  assert.equal(posts.length, 1)
+  assert.equal(posted.length, 1)
+  // 发出去的就是改过的那份，逐字段一致，不是原文件、也不是新建的图。
+  assert.deepEqual(posted[0].prompt, planResult.prompt)
+  assert.deepEqual(Object.keys(posted[0].prompt), Object.keys(original))
+  assert.equal(posted[0].prompt['5'].inputs.seed, 1234567890, '没让人改的 seed 必须原样留着')
+  assert.equal(posted[0].prompt['2'].inputs.text, original['2'].inputs.text)
+  // 本地文件没被改写，也没有多出一份新建的工作流。
+  assert.equal(fs.writes.length, 0)
+  assert.equal(JSON.parse(await fs.readText(await fs.resolve(`${WF_DIR}/portrait_flux.json`)))['1'].inputs.ckpt_name,
+    'waiIllustriousSDXL_v140.safetensors')
+  await comfy.dispose()
+})
+
+test('模型该走哪条加载路径看 Loader 枚举：diffusion_models 的文件名塞进 ckpt_name 会被指出来', async () => {
+  const routes = {}
+  for (const [classType, entry] of Object.entries(BUILD_OBJECT_INFO)) {
+    routes[`/object_info/${classType}`] = () => ({ [classType]: entry })
+  }
+  const { fetchImpl } = createFakeFetch(routes)
+  const comfy = createComfyRuntime({
+    ctx: { fs: createMemoryFs({ tree: workflowTree({}) }) },
+    pluginConfig: { comfyui: { enabled: true, installRoot: WF_INSTALL } },
+    logger: SILENT_LOGGER,
+    fetchImpl,
+  })
+
+  // 把它当 checkpoint 用：校验该拒，而且要说清它其实属于 unet 那条路径。
+  const wrong = await comfy.buildLocalWorkflow({ positive: 'a girl', checkpoint: 'flux1-dev-fp8.safetensors' })
+  assert.equal(wrong.validation.ok, false)
+  assert.equal(wrong.loader_check.used_loader, 'checkpoint')
+  assert.equal(wrong.loader_check.expected_loader, 'unet')
+  assert.equal(wrong.loader_check.evidence, 'loader_enum')
+  assert.equal(wrong.loader_check.mismatch, true)
+
+  // 换成它自己的路径：模型名一字不改，只换 Loader，校验就过。
+  const right = await comfy.buildLocalWorkflow({
+    loader: 'unet',
+    unet: 'flux1-dev-fp8.safetensors',
+    clip: 't5xxl_fp8.safetensors',
+    vae: 'ae.safetensors',
+    positive: 'a girl',
+  })
+  assert.equal(right.validation.ok, true, JSON.stringify(right.validation.problems))
+  assert.equal(right.loader, 'unet')
+  assert.equal(right.prompt['1'].class_type, 'UNETLoader')
+  assert.equal(right.loader_check.expected_loader, 'unet')
+  assert.equal(right.loader_check.mismatch, false)
   await comfy.dispose()
 })

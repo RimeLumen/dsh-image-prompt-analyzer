@@ -10,8 +10,9 @@ import { reconcileModels } from './reconcile.js'
 import { sniffImage } from './image-info.js'
 import { inspectWorkflow, requireApiPrompt } from './workflow.js'
 import { applyWorkflowPatch, planWorkflowPatch, stableFingerprint } from './patch.js'
-import { listWorkflows, matchWorkflows, resolveWorkflowByName, workflowRoots } from './workflows.js'
-import { createObjectInfoCache, fetchNodeInfos, projectNodeInfo } from './object-info.js'
+import { detectActiveUser, listWorkflows, matchWorkflows, resolveWorkflowByName, workflowRoots, workflowUserRoot } from './workflows.js'
+import { createObjectInfoCache, fetchNodeInfos, optionsForInput, projectNodeInfo } from './object-info.js'
+import { ARCHITECTURES, resolveModelArchitecture } from './loader-architecture.js'
 import { buildWorkflow as buildApiWorkflow, classesInPrompt, validateBuiltWorkflow } from './build.js'
 import { createRunRegistry, imageViewUrl, isSafeOutputRef, queryRun, submitPrompt } from './runs.js'
 import {
@@ -30,8 +31,9 @@ export { createComfyClient } from './client.js'
 export { reconcileModels, filterByStates, MODEL_STATES } from './reconcile.js'
 export { inspectWorkflow, detectWorkflowFormat, inspectApiPrompt } from './workflow.js'
 export { planWorkflowPatch, applyWorkflowPatch, diffPatch } from './patch.js'
-export { listWorkflows, resolveWorkflowByName, workflowRoots, matchWorkflows, looseWorkflowKey } from './workflows.js'
+export { listWorkflows, resolveWorkflowByName, workflowRoots, workflowUserRoot, detectActiveUser, matchWorkflows, looseWorkflowKey } from './workflows.js'
 export { createObjectInfoCache, projectNodeInfo, optionsForInput, suggestOptions, MAX_OPTIONS_SHOWN } from './object-info.js'
+export { ARCHITECTURES, architectureOfCategory, architectureInPrompt, normalizeModelName, resolveModelArchitecture } from './loader-architecture.js'
 export { buildWorkflow, validateBuiltWorkflow, classesInPrompt, BUILD_DEFAULTS, BUILD_LOADERS } from './build.js'
 export { submitPrompt, queryRun, RUN_STATES, isValidPromptId, createRunRegistry, imageViewUrl, describeExecution, buildExecutionSuccess, isSafeOutputRef, isSafeOutputSubfolder } from './runs.js'
 export { sniffImage, IMAGE_MEDIA_TYPES } from './image-info.js'
@@ -428,6 +430,8 @@ export function createComfyRuntime({
     now: () => Date.now(),
   })
   let discoveryCache = null
+  // 多用户环境下"现在是谁"。只探测一次并记住；换实例（换发现结果）就重新问。
+  let activeUserId = null
   // 唯一被真实 HTTP 调用验证过的地址。只有拿到 200 才写，连接失败就清掉，
   // 这样"配置里写着 8188"和"8188 上真有服务"不会混成同一件事。
   let verifiedBaseUrl = null
@@ -601,6 +605,8 @@ export function createComfyRuntime({
       ...result.diagnostics,
     ]
     discoveryCache = result
+    // 换了实例，用户身份也就可能变了，下次用工作流时重新问。
+    activeUserId = null
     return result
   }
 
@@ -878,11 +884,52 @@ export function createComfyRuntime({
     return settings.installRoot ?? discoveryCache?.selected?.installation_root ?? null
   }
 
+  /**
+   * 当前实例的启动参数子集。只从"确认过的那个候选"里取，不猜。
+   * 进程发现拿得到就带过来，拿不到就是 null——那时退回安装根推导。
+   */
+  function launchArgsOf() {
+    const selected = discoveryCache?.selected ?? null
+    return selected?.launch ?? null
+  }
+
   function workflowRootsOf() {
     return workflowRoots({
       installRoot: knownInstallRoot(),
+      launch: launchArgsOf(),
+      userId: activeUserId,
       workflowDirs: settings.workflowDirs,
     })
+  }
+
+  /**
+   * 开了多用户时先问一次"现在是谁"，问到就记住，问不到就用 default。
+   * 只列一层目录，不递归、不扫盘。
+   */
+  async function ensureActiveUser({ signal = null } = {}) {
+    if (activeUserId !== null) return activeUserId
+    const launch = launchArgsOf()
+    if (launch?.multi_user !== true) {
+      activeUserId = 'default'
+      return activeUserId
+    }
+    const userRoot = workflowUserRoot({ installRoot: knownInstallRoot(), launch })
+    if (!userRoot) {
+      activeUserId = 'default'
+      return activeUserId
+    }
+    const detected = await detectActiveUser(getFs(), userRoot.path, { signal })
+    if (detected.ambiguous) {
+      const error = new ComfyError(
+        COMFY_CODES.BINDING_AMBIGUOUS,
+        `这个 ComfyUI 开了多用户，用户目录下有 ${detected.candidates.length} 个用户，不知道你要用哪一个的工作流。`,
+        `在 comfyui.workflowDirs 里直接指定某个用户的 workflows 目录，候选：${detected.candidates.join('、')}。`,
+      )
+      error.candidates = detected.candidates
+      throw error
+    }
+    activeUserId = detected.user_id
+    return activeUserId
   }
 
   /** 文件名只允许是名字：带分隔符就能跳出工作流目录。 */
@@ -913,6 +960,7 @@ export function createComfyRuntime({
    * 因为"找到了"和"读得出来"是两种失败，混在一起就说不清了。
    */
   async function listLocalWorkflows({ signal = null, query = null, limit = null } = {}) {
+    await ensureActiveUser({ signal })
     const roots = workflowRootsOf()
     const listing = await listWorkflows(getFs(), roots, { signal })
     let items = listing.items
@@ -938,6 +986,7 @@ export function createComfyRuntime({
   }
 
   async function resolveLocalWorkflow(name, { signal = null } = {}) {
+    await ensureActiveUser({ signal })
     return resolveWorkflowByName(getFs(), workflowRootsOf(), name, { signal })
   }
 
@@ -967,6 +1016,7 @@ export function createComfyRuntime({
     const fileName = normalizeWorkflowFileName(name)
     const prompt = requireApiPrompt(workflow)
 
+    await ensureActiveUser({ signal })
     const roots = workflowRootsOf()
     let chosen = null
     if (typeof directory === 'string' && directory.trim() !== '') {
@@ -1020,9 +1070,21 @@ export function createComfyRuntime({
 
   /** 搭一份基础 API 工作流，并拿真实节点定义逐项校验。 */
   async function buildLocalWorkflow(input = {}, { signal = null, refresh = false } = {}) {
-    const built = buildApiWorkflow(input)
+    // 没指定加载路径时按"给了哪个模型字段"推，不按模型名猜：
+    // 给了 unet 就必须走分离式加载，给了 checkpoint 就走整体加载。
+    const normalized = { ...input }
+    if (normalized.loader === undefined || normalized.loader === null) {
+      const hasUnet = typeof normalized.unet === 'string' && normalized.unet.trim() !== ''
+      normalized.loader = hasUnet ? 'unet' : 'checkpoint'
+    }
+    const built = buildApiWorkflow(normalized)
     const classes = classesInPrompt(built.prompt)
-    const infos = await getNodeInfos(classes, { signal, refresh })
+    // 判断"这个名字该走哪条加载路径"需要两个 Loader 的枚举同时在场。
+    // 只看当前 prompt 会漏掉另一条：checkpoint 工作流里根本没有 UNETLoader，
+    // 于是把 diffusion_models 的文件名错填进 ckpt_name 时，只能报"不在枚举里"，
+    // 说不出它其实属于哪条路径——那正是最容易犯的错。
+    const infoClasses = [...new Set([...classes, ARCHITECTURES.checkpoint.node, ARCHITECTURES.unet.node])]
+    const infos = await getNodeInfos(infoClasses, { signal, refresh })
     const validation = validateBuiltWorkflow({
       prompt: built.prompt,
       // byClass 是 Map，validateBuiltWorkflow 按对象取键；不转一次会一个都查不到，
@@ -1030,7 +1092,36 @@ export function createComfyRuntime({
       objectInfoByClass: Object.fromEntries(infos.byClass),
       requireObjectInfo: true,
     })
-    return { ...built, classes, validation, missing: infos.missing, failures: infos.failures }
+    // 模型喂错了 Loader 时，枚举校验只会说"这个值不在列表里"。
+    // 顺手说清楚它其实属于哪条加载路径，用户才知道是选错了架构而不是打错了名字。
+    const loaderCheck = describeLoaderCheck({
+      loader: built.loader,
+      model: built.loader === 'unet' ? normalized.unet : normalized.checkpoint,
+      infos,
+    })
+    return { ...built, classes, validation, loader_check: loaderCheck, missing: infos.missing, failures: infos.failures }
+  }
+
+  /** 用两个 Loader 的真实枚举判断这个名字归哪条加载路径。 */
+  function describeLoaderCheck({ loader, model, infos }) {
+    if (typeof model !== 'string' || model.trim() === '') return null
+    const checkpointInfo = infos.byClass.get('CheckpointLoaderSimple') ?? null
+    const unetInfo = infos.byClass.get('UNETLoader') ?? null
+    const resolved = resolveModelArchitecture({
+      model,
+      category: null,
+      loaderEnums: {
+        checkpoint: optionsForInput(checkpointInfo, 'ckpt_name'),
+        unet: optionsForInput(unetInfo, 'unet_name'),
+      },
+    })
+    return {
+      model,
+      used_loader: loader,
+      expected_loader: resolved.architecture,
+      evidence: resolved.evidence,
+      mismatch: resolved.architecture !== null && resolved.architecture !== loader,
+    }
   }
 
   return {

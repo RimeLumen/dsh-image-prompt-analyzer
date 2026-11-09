@@ -23,30 +23,105 @@ function joinPath(base, child) {
 }
 
 /**
- * 工作流根。ComfyUI 把用户工作流放在 <安装根>/user/default/workflows，
- * 老版本或第三方整合包也可能有 <安装根>/workflows，两个都看，但标清来源。
+ * ComfyUI 的用户根。规则照抄 folder_paths.py 与 main.py：
+ *   user_directory = os.path.join(base_path, "user")，然后被 --user-directory 整个换掉。
+ * base_path 本身被 --base-directory 换掉。所以顺序是 user-directory > base-directory > 安装根。
  */
-export function workflowRoots({ installRoot = null, workflowDirs = [] } = {}) {
-  const roots = []
+export function workflowUserRoot({ installRoot = null, launch = null } = {}) {
+  const explicit = typeof launch?.user_directory === 'string' ? launch.user_directory.trim() : ''
+  if (explicit !== '' && isAbsolutePath(explicit)) {
+    return { path: stripTrailing(explicit), source: 'arg_user_directory' }
+  }
+  const base = typeof launch?.base_directory === 'string' ? launch.base_directory.trim() : ''
+  if (base !== '' && isAbsolutePath(base)) {
+    return { path: joinPath(base, 'user'), source: 'arg_base_directory' }
+  }
   if (typeof installRoot === 'string' && installRoot.trim() !== '') {
+    return { path: joinPath(installRoot.trim(), 'user'), source: 'install_root' }
+  }
+  return null
+}
+
+function stripTrailing(value) {
+  return String(value).replace(/[\\/]+$/, '')
+}
+
+/** 只有绝对路径才当覆盖用；相对路径的含义取决于进程 cwd，猜不得。 */
+export function isAbsolutePath(value) {
+  const text = String(value ?? '')
+  if (text === '') return false
+  if (/^[a-zA-Z]:[\\/]/u.test(text)) return true
+  if (/^\\\\[^\\]/u.test(text)) return true
+  return text.startsWith('/')
+}
+
+/**
+ * 工作流根。
+ *
+ * 主根是当前实例的用户目录下的 workflows：<user 根>/<用户>/workflows。
+ * 单用户环境用户是 default；开了 --multi-user 就是一人一层，这时不能假定 default。
+ * 老整合包还有 <安装根>/workflows，留着当次要根，但标清来源，不冒充主根。
+ */
+export function workflowRoots({ installRoot = null, launch = null, userId = null, workflowDirs = [] } = {}) {
+  const roots = []
+  const userRoot = workflowUserRoot({ installRoot, launch })
+  const activeUser = typeof userId === 'string' && userId.trim() !== '' ? userId.trim() : 'default'
+  if (userRoot) {
     roots.push({
-      path: joinPath(installRoot.trim(), 'user/default/workflows'),
-      source: 'install',
+      path: joinPath(joinPath(userRoot.path, activeUser), 'workflows'),
+      source: userRoot.source,
       primary: true,
+      user_id: activeUser,
     })
-    roots.push({
-      path: joinPath(installRoot.trim(), 'workflows'),
-      source: 'install-legacy',
-      primary: false,
-    })
+  }
+  if (typeof installRoot === 'string' && installRoot.trim() !== '') {
+    const legacy = joinPath(installRoot.trim(), 'workflows')
+    if (!roots.some((item) => item.path.toLowerCase() === legacy.toLowerCase())) {
+      roots.push({ path: legacy, source: 'install-legacy', primary: false, user_id: null })
+    }
   }
   for (const dir of workflowDirs ?? []) {
     if (typeof dir !== 'string' || dir.trim() === '') continue
-    const path = dir.trim()
+    const path = stripTrailing(dir.trim())
     if (roots.some((item) => item.path.toLowerCase() === path.toLowerCase())) continue
-    roots.push({ path, source: 'config', primary: false })
+    roots.push({ path, source: 'config', primary: false, user_id: null })
   }
   return roots
+}
+
+/**
+ * 开了 --multi-user 时，用户根下面每个公开用户一层。
+ * 只有恰好一个候选才敢用它；多个就报候选，不替用户挑。
+ * `__` 开头的是 ComfyUI 自己的系统目录（缓存、系统设置），不是人。
+ */
+export async function detectActiveUser(fsAdapter, userRoot, { signal = null } = {}) {
+  const root = typeof userRoot === 'string' ? stripTrailing(userRoot) : ''
+  if (root === '') return { user_id: 'default', ambiguous: false, candidates: [] }
+  let target
+  try {
+    target = await fsAdapter.resolve(root, { signal })
+  } catch {
+    return { user_id: 'default', ambiguous: false, candidates: [] }
+  }
+  const info = await fsAdapter.stat(target, { signal })
+  if (!info || info.type !== 'directory') return { user_id: 'default', ambiguous: false, candidates: [] }
+
+  let entries = []
+  try {
+    entries = await fsAdapter.listDir(target, { signal })
+  } catch {
+    return { user_id: 'default', ambiguous: false, candidates: [] }
+  }
+  const users = entries
+    .filter((entry) => entry.type === 'directory')
+    .map((entry) => entry.name)
+    .filter((name) => typeof name === 'string' && name !== '' && !name.startsWith('__'))
+    .sort((a, b) => a.localeCompare(b))
+
+  if (users.length === 0) return { user_id: 'default', ambiguous: false, candidates: [] }
+  if (users.length === 1) return { user_id: users[0], ambiguous: false, candidates: users }
+  if (users.includes('default')) return { user_id: 'default', ambiguous: false, candidates: users }
+  return { user_id: null, ambiguous: true, candidates: users }
 }
 
 export function workflowExtensionOf(name) {

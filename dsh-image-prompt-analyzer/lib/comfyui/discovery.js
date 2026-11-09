@@ -229,6 +229,9 @@ const ARGV_VALUE_FLAGS = Object.freeze([
 ])
 const ARGV_MULTI_FLAGS = Object.freeze(['--extra-model-paths-config'])
 
+/** 不带值的开关。`--multi-user` 决定用户目录下面是不是一人一层，不能当普通 token 丢掉。 */
+const ARGV_BOOLEAN_FLAGS = Object.freeze(['--multi-user'])
+
 /**
  * 解析 ComfyUI 的启动参数。
  *
@@ -278,6 +281,11 @@ export function parseComfyArgv(argv, { windows = process.platform === 'win32' } 
     base_directory: null,
     models_directory: null,
     output_directory: null,
+    input_directory: null,
+    temp_directory: null,
+    user_directory: null,
+    previews_directory: null,
+    multi_user: false,
     extra_model_paths_config: [],
     raw_args: tokens.slice(),
   }
@@ -295,6 +303,11 @@ export function parseComfyArgv(argv, { windows = process.platform === 'win32' } 
     const inline = token.startsWith('--') ? token.indexOf('=') : -1
     const flag = inline > 0 ? token.slice(0, inline) : token
     const inlineValue = inline > 0 ? token.slice(inline + 1) : null
+
+    if (ARGV_BOOLEAN_FLAGS.includes(flag)) {
+      result.multi_user = true
+      continue
+    }
 
     if (ARGV_MULTI_FLAGS.includes(flag)) {
       if (inlineValue !== null) {
@@ -331,6 +344,19 @@ export function parseComfyArgv(argv, { windows = process.platform === 'win32' } 
           break
         case '--output-directory':
           result.output_directory = value
+          break
+        case '--input-directory':
+          result.input_directory = value
+          break
+        case '--temp-directory':
+          result.temp_directory = value
+          break
+        case '--user-directory':
+          // ComfyUI 的 --user-directory 是绝对路径覆盖，直接替换 <base>/user。
+          result.user_directory = value
+          break
+        case '--previews-directory':
+          result.previews_directory = value
           break
         default:
           break
@@ -946,6 +972,13 @@ export async function discoverComfyUI({
         model_roots: modelRootsForInstall({ installRoot, argv, platform }),
         extra_model_paths_config: [...new Set(argv.extra_model_paths_config ?? [])],
         runtime_base_url: argv.port ? `http://127.0.0.1:${argv.port}` : null,
+        // 工作流目录要看这几项：--user-directory 直接换用户根，--base-directory 换 <base>，
+        // --multi-user 决定用户根下面是不是一人一层。只留下要用的，不留整条命令行。
+        launch: {
+          base_directory: argv.base_directory ?? null,
+          user_directory: argv.user_directory ?? null,
+          multi_user: argv.multi_user === true,
+        },
         discovery_source: DISCOVERY_SOURCES.PROCESS,
         confidence: inspected.ok ? CONFIDENCE.HIGH : CONFIDENCE.MEDIUM,
         status: inspected.ok ? DISCOVERY_STATUS.FOUND : DISCOVERY_STATUS.PARTIAL,

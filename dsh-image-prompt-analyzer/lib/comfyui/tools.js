@@ -93,6 +93,22 @@ function nextStepFor(run) {
 }
 
 /**
+ * builder 的授权闸门。
+ *
+ * 生图请求默认走"用本地已有工作流"这条路：找到文件、在副本上改、提交改后的副本。
+ * 从零搭一份只该在用户明确要求时发生，所以这里要一个显式的授权字段，
+ * 而不是靠"没找到文件"之类的失败自动滑进 builder。
+ */
+function requireBuildAuthorization(args) {
+  if (args?.reason === 'user_requested_new_workflow') return
+  throw new ComfyError(
+    COMFY_CODES.CAPABILITY_UNAVAILABLE,
+    '新建工作流需要用户明确授权，本次调用没有带上 reason: "user_requested_new_workflow"。',
+    '先用 comfyui_list_workflows 找本地已有工作流；要换模型或改参数用 comfyui_plan_workflow_patch 在副本上改。只有用户明确说"新建一份""自己搭一份"时才用本工具。',
+  )
+}
+
+/**
  * 补丁被整份作废时，`error.details` 里每一处失败都带着自己的 node_id / class_type /
  * input。只回一条汇总诊断等于把用户最需要的那行信息丢了，所以逐条摊开。
  */
@@ -462,11 +478,21 @@ export function createComfyToolSpecs(runtime) {
       name: 'comfyui_build_workflow',
       description:
         '从零搭一份基础文生图 API 工作流，并用 ComfyUI 的真实节点定义逐项校验。' +
+        '**只有用户明确要求新建或自行搭建工作流时才调用。**' +
+        '用户指定了本地工作流、要求换模型或改参数、找不到文件、文件格式不支持、模型架构不兼容，' +
+        '都不构成新建授权：那些情况先用 comfyui_list_workflows 找本地文件，用 comfyui_plan_workflow_patch 在副本上改。' +
         '只支持 checkpoint 与 unet 两条加载路径；模型名必须是本机真实存在的值。' +
         '返回的工作流是本次任务的工作副本，不写文件；要留档用 comfyui_save_workflow。',
       parameters: {
         type: 'object',
         properties: {
+          reason: {
+            type: 'string',
+            enum: ['user_requested_new_workflow'],
+            description:
+              '新建授权。只有用户明确说过"新建一个工作流""自己搭一份""不用现有的重新构建"时才填这个值；' +
+              '用户只说"我要生图"或指定了本地工作流，就不要调用本工具。',
+          },
           loader: {
             type: 'string',
             enum: ['checkpoint', 'unet'],
@@ -505,10 +531,11 @@ export function createComfyToolSpecs(runtime) {
           scheduler: { type: 'string' },
           filename_prefix: { type: 'string' },
         },
-        required: ['positive'],
+        required: ['positive', 'reason'],
         additionalProperties: false,
       },
       execute: guarded('comfyui_build_workflow', runtime, async (comfy, args) => {
+        requireBuildAuthorization(args)
         const built = await comfy.buildLocalWorkflow(args, { signal: args.signal })
         return {
           prompt: built.prompt,
@@ -526,9 +553,12 @@ export function createComfyToolSpecs(runtime) {
             missing: built.missing,
             failures: built.failures,
           },
-          note: built.validation.ok
-            ? '工作流已按真实节点定义校验通过。要留档用 comfyui_save_workflow，要出图用 comfyui_submit_workflow。'
-            : '校验没通过，不要提交。按 problems 里的节点与字段改。',
+          loader_check: built.loader_check,
+          note: built.loader_check?.mismatch
+            ? `这个模型在 Loader 枚举里只出现在 ${built.loader_check.expected_loader} 那条路径上，现在用的是 ${built.loader_check.used_loader}。别把模型名硬填进另一个 Loader。`
+            : built.validation.ok
+              ? '工作流已按真实节点定义校验通过。要留档用 comfyui_save_workflow，要出图用 comfyui_submit_workflow。'
+              : '校验没通过，不要提交。按 problems 里的节点与字段改。',
         }
       }),
     },

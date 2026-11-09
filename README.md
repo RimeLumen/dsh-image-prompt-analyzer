@@ -323,13 +323,31 @@ comfyui:
 
 生图前只要说一个名字就够了，插件自己去 ComfyUI 的工作流目录里找：
 
-- 目录按 `<安装根>/user/default/workflows` → `<安装根>/workflows` → 配置里 `comfyui.workflowDirs` 的顺序看，不会去扫整块盘。
+- 目录按当前实例自己的用户目录推导，不写死任何一台机器的路径：`--user-directory` 直接给用户目录；否则 `--base-directory` 加 `/user`；两者都没有才退回 `<安装根>/user`。再拼上当前用户（单用户是 `default`），最后一层是 `workflows`。
+- 开了 `--multi-user` 时会去看用户目录下实际有哪几个用户：只有一个就用它，有 `default` 就用 `default`，多个人又没有 `default` 就报歧义并把候选列出来，不替你挑。`__` 开头的是 ComfyUI 自己的系统目录，不算用户。
+- 老整合包的 `<安装根>/workflows` 和配置里的 `comfyui.workflowDirs` 只当额外的次要位置。默认目录不存在就是不存在，不会因此去别的盘找。
 - 名字可以不带 `.json`，大小写和 `-` `_` 空格之间的差别也认。
 - 同名的有多份时报候选（带路径），由你指定用哪份；找不到就报错并列出可用名字，绝不拿别的工作流顶替。
 - 只接受 API 格式。UI 格式能读能看结构，但不会自动转换，也不会被当成 API Prompt 提交。
 - 修改默认只在内存里的工作副本上做，原始文件不动；要落盘就走 `comfyui_save_workflow`，只新建不覆盖。
+- 工作流根之外的符号链接、目录联接会被跳过并留一条诊断，不会跟出去。
 
 改工作流时可以直接说"换成某个 checkpoint""把第一个 LoRA 降到 0.6""步数改成 30"，插件会把这句话翻成具体节点上的具体字段。工作流里有多个同类节点时它不猜，会带着候选回来问。
+
+### 什么时候才会从零新建工作流
+
+`comfyui_build_workflow` 默认是关着的，调用必须显式带上 `reason: "user_requested_new_workflow"`，否则直接返回 `COMFY_CAPABILITY_UNAVAILABLE` 并提示先去 `comfyui_list_workflows` 找已有的。**只有你明确说"新建一份""自己搭一份"才算授权**；下面这些都不算：
+
+- 工作流没找到、名字记错；
+- 文件是 UI 格式、读不了；
+- 模型和加载方式对不上、参数校验没过；
+- 目录没权限；
+- 只是想让图好看一点。
+
+改模型、改参数、改 LoRA 一律走 `comfyui_plan_workflow_patch` 在副本上改，不会顺手新建一份替代品。
+
+模型该用哪个 Loader 由 ComfyUI 自己的 `/object_info` 枚举和磁盘分类决定，不看文件名里写了什么：出现在 `UNETLoader` 枚举里就是 `diffusion_models` + `UNETLoader`（CLIP 与 VAE 各自独立加载），出现在 `CheckpointLoaderSimple` 枚举里就是 `checkpoints` + 一个 loader 出 MODEL/CLIP/VAE 三路。两个枚举都有时报歧义，不猜。
+
 
 `/object_info` 按节点名逐个取，命中缓存就不发请求；缓存默认 5 分钟（`comfyui.objectInfoTtlMs` 可调），换 ComfyUI 实例、节点定义对不上、或显式要求刷新时才重取。返回给对话的只有"节点在不在、必填项齐不齐、这次改的字段合不合法"，不把整份定义灌进去。
 
