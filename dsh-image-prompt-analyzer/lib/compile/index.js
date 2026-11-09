@@ -19,6 +19,7 @@ import {
   verifyDescriptionGrounding,
 } from './describe.js'
 import { buildControlAdvice, controlDiagnostics, delegatePoseTerms, normalizeControlMode } from './control.js'
+import { MOSS_CODES, MOSS_NEGATIVE_BASE, MOSS_REGISTER, buildMossNegative, composeMossCaption, verifyCaptionGrounding } from './moss.js'
 import { termRef, buildFactLedger } from '../trace/ledger.js'
 
 /**
@@ -68,6 +69,15 @@ export {
   SUPPRESS_CODES,
 } from './suppress.js'
 export { formatTag, applyWordStyle } from './style.js'
+export {
+  MOSS_CODES,
+  MOSS_NEGATIVE_BASE,
+  MOSS_REGISTER,
+  MOSS_SCHEMA_VERSION,
+  buildMossNegative,
+  composeMossCaption,
+  verifyCaptionGrounding,
+} from './moss.js'
 export {
   auditFidelity,
   FIDELITY_CODES,
@@ -273,11 +283,15 @@ export async function compilePrompt({
   diagnostics.push(...(rendered.diagnostics ?? []))
 
   const allPositiveTerms = rendered.segments.flatMap((segment) => segment.terms)
-  const suppression = includeNegative
+  // caption 档案（MOSS-Image）的负向要等 Caption 出来才能定：它得知道正文里已经写了什么，
+  // 才能把自相矛盾的负向词让开。所以这类档案先跳过 buildSuppression，末尾单独编。
+  const wordStyle = profile?.tag_standard?.word_style
+  const captionMode = wordStyle === 'caption'
+  const suppression = includeNegative && !captionMode
     ? buildSuppression({ ir, profile, positiveTerms: allPositiveTerms })
     : { terms: [], diagnostics: [], stats: {} }
   diagnostics.push(...suppression.diagnostics)
-  const negativePrompt = suppression.terms.map((term) => term.text).join(', ')
+  let negativePrompt = suppression.terms.map((term) => term.text).join(', ')
 
   if (rendered.positive === '') {
     diagnostics.push(
@@ -366,18 +380,38 @@ export async function compilePrompt({
     )
   }
 
+  // caption 档案（MOSS-Image）：走 moss.js，把同一批 IR 事实按语义顺序写成一段连贯描述。
+  // 注意它吃的是 `described.facts`——和候选描述版同源，所以既没有第二次视觉调用，
+  // 也不是把别的档案的成品再翻译一遍：三条通道各自从 IR 编译，彼此不嵌套。
+  const caption = captionMode
+    ? composeMossCaption({ ir, profile, facts: described.facts, detailLevel, character: characterTag })
+    : null
+  if (caption) {
+    diagnostics.push(...caption.diagnostics)
+    const mossNegative = buildMossNegative({
+      ir,
+      profile,
+      includeNegative,
+      positiveText: caption.text,
+    })
+    diagnostics.push(...mossNegative.diagnostics)
+    negativePrompt = mossNegative.text
+    caption.negative = mossNegative
+  }
+
   // prose 档案（Flux / MJ / GPT-Image 一类）：正稿直接用成分句。标签版仍然留在 slots 里，
   // 既能回查“这句话是从哪些标签来的”，也方便用户切回标签档时直接复用。
-  const wordStyle = profile?.tag_standard?.word_style
   // 两版并列，各自完整：
   //   标签版（positive）只放词表认得的标签——句子混进去会摊薄真标签的权重；
   //   描述版（description）用完整句子，专收动作、介质、关系这类标签表达不了的东西。
   // 以前 hybrid 档案把两者揉成一段，代价是标签被稀释、句子也读不全，已废弃。
   const prosePositive = wordStyle === 'prose' && composed.text.length > 0
+  const captionPositive = captionMode && (caption?.text.length ?? 0) > 0
   const descriptionText = composed.text
   // 标签档的正稿永远是纯标签：句子只会把标签权重摊薄，而句子能表达的东西
   // 描述版已经写了。两版并列返回，用哪版由人决定。
-  const positive = prosePositive ? descriptionText : rendered.positive
+  const positive = captionPositive ? caption.text : prosePositive ? descriptionText : rendered.positive
+  const register = captionPositive ? 'caption' : prosePositive ? 'clause' : 'tag'
 
   const result = {
     schema_version: COMPILE_SCHEMA_VERSION,
@@ -385,10 +419,27 @@ export async function compilePrompt({
     detail_level: detailLevel ?? preset?.config_id ?? null,
     prompts: {
       positive,
-      description: descriptionText,
+      // caption 档案的「描述」就是这段 Caption 本身：它已经是完整描述，
+      // 再放一份成分句只会让下游分不清哪一份才是正稿。
+      description: captionPositive ? caption.text : descriptionText,
       negative: negativePrompt,
     },
-    register: prosePositive ? 'clause' : 'tag',
+    register,
+    // Caption 的完整产出（含依据引用、丢弃事实、语法校验）。标签版仍在 slots 里可回查。
+    caption: caption
+      ? {
+          schema_version: caption.schema_version,
+          text: caption.text,
+          clauses: caption.clauses,
+          grounding: caption.grounding,
+          facts_used: caption.facts_used,
+          facts_dropped: caption.facts_dropped,
+          stats: caption.stats,
+          negative: caption.negative
+            ? { text: caption.negative.text, terms: caption.negative.terms, stats: caption.negative.stats }
+            : null,
+        }
+      : null,
     slots: rendered.segments,
     quality_block: qualitySegment ? qualitySegment.terms.slice() : [],
     keywords: keywords.map((row) => row.text),
@@ -434,6 +485,14 @@ export async function compilePrompt({
       description_candidate_chars: descriptionCandidate.text.length,
       description_candidate_facts: described.facts.length,
       description_candidate_unsupported: candidateGrounding.unsupported.length,
+      // Caption 通道的规模与依据缺口。没有 caption 档案时是 null，不是 0——
+      // 0 会被读成"编了但一个字都没写出来"。
+      caption_chars: caption ? caption.text.length : null,
+      caption_sentences: caption ? caption.stats.sentences : null,
+      caption_facts_used: caption ? caption.stats.used : null,
+      caption_facts_dropped: caption ? caption.stats.dropped : null,
+      caption_unsupported: caption ? caption.grounding.unsupported.length : null,
+      caption_negative_terms: caption?.negative ? caption.negative.stats.terms : null,
     },
   }
   // 事实台账：每条观察从 IR 一路走到哪个通道。join 全按身份（category + key + entity_id），

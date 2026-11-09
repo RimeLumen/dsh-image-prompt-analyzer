@@ -32,8 +32,8 @@ function analyzeImagePrompt(runtime) {
     name: 'analyze_image_prompt',
     description:
       '把一张图片逆向成提示词，按所选目标档案的写法给出一条正向提示词与一条反向提示词。' +
-      '正向只给一种形态，由档案决定：标签档给标签流，描述档（word_style=prose）给自然语言句子，不并列两版让你挑。' +
-      '返回只有正向、反向、目标档案、写法（prompt_style: tag / prose）、图片尺寸，以及控制网模式下必须带走的权重与区间建议。' +
+      '正向只给一种形态，由档案决定：标签档（word_style=spaced）给标签流，描述档（prose）给成分句，Caption 档（caption，MOSS-Image）给一段连贯的自然语言描述，不并列几版让你挑。' +
+      '返回只有正向、反向、目标档案、写法（prompt_style: tag / prose / caption）、图片尺寸，以及控制网模式下必须带走的权重与区间建议。' +
       '槽位明细、成分句、事实台账、还原审计、覆盖率、统计这些是分析过程，写到本地 trace（data/traces/<task_id>/），不占对话；' +
       '要逐条追查某条观察去了哪里，用 scripts/inspect-prompt.mjs 读 trace 里的 IR。' +
       '诊断只回 warning 与 error，INFO 级说明留在 trace 里。' +
@@ -46,7 +46,7 @@ function analyzeImagePrompt(runtime) {
         target_profile: {
           type: 'string',
           description:
-            '目标模型档案的 config_id，如 illustrious / anima。必须显式指定：没有默认档案，不传会报 MODEL_PROFILE_NOT_SELECTED。',
+            '目标模型档案的 config_id，如 illustrious / anima / moss。必须显式指定：没有默认档案，不传会报 MODEL_PROFILE_NOT_SELECTED。',
         },
         variant: {
           type: 'string',
@@ -156,7 +156,7 @@ function previewModelProfile(runtime) {
     parameters: {
       type: 'object',
       properties: {
-        target_profile: { type: 'string', description: '要预览的档案 config_id，如 illustrious / anima。' },
+        target_profile: { type: 'string', description: '要预览的档案 config_id，如 illustrious / anima / moss。' },
         variant: { type: 'string', description: '已废弃：2.0 档案没有变体概念。' },
         detail_level: { ...DETAIL_LEVEL, description: '覆盖细节密度。' },
         sample_ir: { type: 'object', description: '自定义示例 IR；缺省使用内置合成 IR。' },

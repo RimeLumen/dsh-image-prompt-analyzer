@@ -20,7 +20,7 @@ const WEIGHTED_SLOTS = new Set([
 function withWeight(text, weight, { wordStyle, slot }) {
   const factor = Number(weight)
   if (!Number.isFinite(factor) || factor <= 1) return text
-  if (wordStyle === 'prose') return text
+  if (wordStyle === 'prose' || wordStyle === 'caption') return text
   if (!WEIGHTED_SLOTS.has(slot)) return text
   if (text.startsWith('(') && text.endsWith(')')) return text
   return `(${text}:${Number(factor.toFixed(2))})`

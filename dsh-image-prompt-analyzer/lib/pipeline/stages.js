@@ -427,8 +427,9 @@ export function buildAnalysisEnvelope({
     extra: {
       result: {
         target_profile: compiled.target_profile ?? null,
-        // clause = 档案要句子，tag = 档案要标签。Agent 据此决定怎么交给下游模型。
-        prompt_style: compiled.register === 'clause' ? 'prose' : 'tag',
+        // clause = 档案要句子，caption = 档案要完整 Caption，tag = 档案要标签。
+        // Agent 据此决定怎么交给下游模型：caption 直接整段喂，tag 才需要按逗号拼。
+        prompt_style: compiled.register === 'caption' ? 'caption' : compiled.register === 'clause' ? 'prose' : 'tag',
         // 出图要用的尺寸：不给出图，Agent 还得再问一次原图多大。
         image: image
           ? { width: image.width ?? null, height: image.height ?? null, aspect_ratio: image.aspect_ratio ?? null }

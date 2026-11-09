@@ -2,9 +2,9 @@
 export function applyWordStyle(text, wordStyle) {
   const value = String(text ?? '').trim()
   if (!value) return ''
-  // prose 档案的正文由 compose.js 整句生成，这里只作为单个标签的兜底写法：
+  // prose / caption 档案的正文由整句生成，这里只作为单个标签的兜底写法：
   // 句子里的词不能带下划线，否则就成了标签，不再是句子。
-  if (wordStyle === 'prose') return value.replace(/_/g, ' ')
+  if (wordStyle === 'prose' || wordStyle === 'caption') return value.replace(/_/g, ' ')
   if (wordStyle === 'spaced' || wordStyle === 'hybrid') return value.replace(/_/g, ' ')
   if (wordStyle === 'underscored') return value.replace(/ /g, '_')
   return value

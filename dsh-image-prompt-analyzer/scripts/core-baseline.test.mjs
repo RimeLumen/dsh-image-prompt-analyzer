@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 
 import { registerAllTools } from '../lib/tools/index.js'
 import { compilePrompt } from '../lib/compile/index.js'
+import { MOSS_CODES, MOSS_NEGATIVE_BASE } from '../lib/compile/moss.js'
 import { createConfigStore, resolveProfileRequest } from '../lib/config/loader.js'
 // PLUGIN_CONFIG_CODES 没有从 plugin-config.js 导出，所以这里比对错误码字面量。
 // 字面量同时也是对外契约的一部分：诊断里的 error_code 就是这些字符串。
@@ -154,11 +155,13 @@ const CORE_TOOL_SCHEMA_SHA256 = {
   // 「两个正稿字段并列返回」的旧说法换掉。属性名、枚举、required 全部未动。
   // 2026-11-09 有意更新：示例档案名 animagine-xl-4.0 → anima（同一份档案改名，
   // 旧名登记为别名）。属性名、枚举、required 仍未动。
-  analyze_image_prompt: 'f942f2f177fcf0ebd5ef049d1f261afebeee666f2ef925ac8462c023d7e0ee6a',
+  // 2026-11-09 再次有意更新：新增 moss 档案后，描述里补上 prompt_style 的第三个值
+  // caption 与示例档案名 moss。属性名、枚举、required 依旧未动。
+  analyze_image_prompt: '16ada85c52eaf3f200d94fde768ddaf2378ac613208d8c91f53b65719d0288e1',
   validate_configs: 'c288b8347979e39b2eb3083e661c81f2e2555e3bfac948a13bc2834be17c2801',
   diagnose_knowledge_base: 'e366cbd5fddf761a42b34d27b790d867e8f2405b0523c92eeaae536427844682',
   rebuild_knowledge_base: '562b673a7a02ee57c03e7ac880d186e3f9ccb80ce3033ae560abac6ffecba6d3',
-  preview_model_profile: 'c586a1f452aa2847de89c0479db29c56d94928c480d8a5bbb712828e75974ffc',
+  preview_model_profile: '1c43163146bbec55bfa23e798c12697458e47d13e1d01c8972dc4bd5494790c3',
   manage_experiences: '1f67cf58e5d0094b02ad3deaefdc27369cf07c07db4e162b493cf43868fe0a9d',
 }
 
@@ -4143,8 +4146,8 @@ test('AnimaImage 与 animagine-xl-4.0 都归一为 anima，不另立档案', asy
   const { store, dataDir } = await loadRealConfigStore()
   try {
     const ids = store.listModelProfileIds().map((item) => item.config_id).sort()
-    // 只有两份档案：改名不能变成"新旧各一份"。
-    assert.deepEqual(ids, ['anima', 'illustrious'])
+    // 三份档案，各自一个 config_id：改名不能变成"新旧各一份"，新增模型也不能另立同义档案。
+    assert.deepEqual(ids, ['anima', 'illustrious', 'moss'])
 
     for (const name of ['anima', 'AnimaImage', 'animagine-xl-4.0', 'ANIMAGINE-XL-4.0', 'animagine_xl_4_0']) {
       const entry = store.getModelProfile(name)
@@ -4186,7 +4189,7 @@ test('illustrious 仍是标签档，和 anima 互不干扰', async () => {
 
 test('档案目录里没有第二份 anima，旧文件名已不在', () => {
   const files = readdirSync(join(PACKAGE_DIR, 'configs/model-profiles')).sort()
-  assert.deepEqual(files, ['anima.json', 'illustrious.json'])
+  assert.deepEqual(files, ['anima.json', 'illustrious.json', 'moss.json'])
 })
 
 // ───── 改名之后，历史记录仍然查得到 ─────
@@ -4976,4 +4979,318 @@ test('模型该走哪条加载路径看 Loader 枚举：diffusion_models 的文�
   assert.equal(right.loader_check.expected_loader, 'unet')
   assert.equal(right.loader_check.mismatch, false)
   await comfy.dispose()
+})
+
+// ───── MOSS-IMAGE：第三档写法，从同一份 IR 编译 Caption ─────
+//
+// MOSS 官方要的是「对最终画面内容的连贯描述」：主体、外观、动作、空间关系、
+// 构图、环境、光照按语义顺序写进一段话。它既不是 Anima 那种把标签串成句子的
+// prose，也不是 Illustrious 的标签流——三档都从同一份 IR 出发各自编译，
+// 谁也不翻译谁的成品。这一组钉的是路由、写法形态、事实保留与负向的短。
+
+/** 用真实 configs/ 取一份 moss 档案；dataDir 走临时目录，不读本机用户覆盖。 */
+async function loadMossProfile() {
+  const { store, loaded, dataDir } = await loadRealConfigStore()
+  return { store, loaded, dataDir, moss: store.getModelProfile('moss') }
+}
+
+test('moss 档案能加载，写法是 caption，加载诊断里没有 error', async () => {
+  const { moss, loaded, dataDir } = await loadMossProfile()
+  try {
+    assert.ok(moss, 'moss 档案没有加载出来')
+    assert.equal(moss.config.config_id, 'moss')
+    assert.equal(moss.config.tag_standard.word_style, 'caption')
+    // 负向就是官方那四条，不是 Illustrious 的几十条。
+    assert.deepEqual(moss.config.tag_standard.negative.terms, [...MOSS_NEGATIVE_BASE])
+    assert.equal(moss.config.tag_standard.negative.max_terms, 6)
+
+    const errors = loaded.diagnostics.filter((item) => item.severity === 'error')
+    assert.deepEqual(errors, [], `加载 moss 时出现 error：${errors.map((item) => item.message).join('；')}`)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('moss-image-base 与 MOSS-Image-SFT 都归一为 moss，不会落到 illustrious', async () => {
+  const { store, dataDir } = await loadMossProfile()
+  try {
+    for (const name of ['moss', 'MOSS-Image', 'moss-image-base', 'moss-image-sft', 'openmoss', 'MOSS_IMAGE']) {
+      const entry = store.getModelProfile(name)
+      assert.ok(entry, `${name} 没有解析到任何档案`)
+      assert.equal(entry.config.config_id, 'moss', `${name} 解析到了 ${entry.config.config_id}`)
+    }
+    // 走真实解析入口，确认写法也一起跟过来。
+    const resolved = resolveProfileRequest(store, { profile_id: 'MOSS-Image-SFT' })
+    assert.equal(resolved.profile?.tag_standard?.word_style, 'caption')
+    assert.notEqual(resolved.profile?.config_id, 'illustrious')
+    assert.deepEqual(resolved.diagnostics.filter((item) => item.severity === 'error'), [])
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('moss 只从 IR 编译：不传知识库也能出 Caption，register 是 caption', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    // kb: null 是有意的：Caption 不需要查标签词库，也不需要再调一次视觉模型。
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null })
+
+    assert.equal(out.register, 'caption')
+    assert.ok(out.prompts.positive.length > 0)
+    assert.equal(out.caption?.text, out.prompts.positive)
+    // Caption 就是正稿本身，不再并列一份「成分句」让下游分不清。
+    assert.equal(out.prompts.description, out.prompts.positive)
+    assert.equal(out.stats.caption_chars, out.caption.text.length)
+    assert.equal(out.stats.caption_sentences, out.caption.stats.sentences)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('同一份 IR 在 anima / illustrious / moss 三档编译成三种不同写法', async () => {
+  const { store, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const outs = {}
+    for (const id of ['anima', 'illustrious', 'moss']) {
+      const entry = store.getModelProfile(id)
+      assert.ok(entry, `${id} 档案缺失`)
+      outs[id] = await compilePrompt({ ir, profile: entry.config, kb: null })
+    }
+
+    assert.equal(outs.anima.register, 'clause')
+    assert.equal(outs.illustrious.register, 'tag')
+    assert.equal(outs.moss.register, 'caption')
+
+    const positives = new Set([outs.anima, outs.illustrious, outs.moss].map((out) => out.prompts.positive))
+    assert.equal(positives.size, 3, '三档正稿不能有两档是同一段文本')
+    // Caption 不是标签流：逗号密度必须明显低于标签档。
+    assert.ok(
+      outs.moss.prompts.positive.split(',').length < outs.illustrious.prompts.positive.split(',').length,
+      'moss 正稿看起来还是逗号标签流',
+    )
+    // 也不复用 Anima 的成分句。
+    assert.notEqual(outs.moss.prompts.positive, outs.anima.prompts.positive)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('moss 正稿是连贯描述：有主语、成句、不带质量词与标签开头', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null })
+    const text = out.prompts.positive
+
+    assert.match(text, /^The image shows /)
+    assert.ok(text.split(/\.\s/).length >= 5, `句子太少，看着不像 Caption：${text}`)
+    // 质量词与评分词不进 Caption：它们不描述画面。
+    assert.equal(/masterpiece|best quality|absurdres|highres|score_\d|very aesthetic/i.test(text), false)
+    // 标签原样开头（1girl、long_hair）说明还在拼标签。
+    assert.equal(/\b1girl\b|\d+girl/.test(text), false)
+    assert.equal(text.includes('_'), false)
+    // 逗号只用来分隔同一句里的并列项，不该像标签流那样每两三个词一个逗号。
+    const commas = (text.match(/,/g) ?? []).length
+    assert.ok(commas <= out.caption.stats.sentences * 2, `逗号 ${commas} 个，句子才 ${out.caption.stats.sentences} 句`)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('moss Caption 保留主体外观、服装与表情', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null })
+    const text = out.prompts.positive
+
+    assert.match(text, /silver hair/)
+    assert.match(text, /red eyes/)
+    assert.match(text, /white blouse/)
+    assert.match(text, /slight smile/)
+    // 外观跟主体在同一句里，不是各起一句把关系拆散。
+    assert.match(text, /shows a girl with silver hair and red eyes/)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('moss Caption 保留姿态、肢体动作与空间关系', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null })
+    const text = out.prompts.positive
+
+    assert.match(text, /standing with weight on one leg/)
+    assert.match(text, /left arm is raised toward the viewer/)
+    // 关系不能拆成两个名词：手和伞要出现在同一句里。
+    assert.match(text, /hand holds the umbrella/)
+    assert.equal(text.includes('umbrella, hand'), false)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('moss Caption 保留构图、镜头、背景与光照', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null })
+    const text = out.prompts.positive
+
+    assert.match(text, /cowboy shot/)
+    assert.match(text, /from below/)
+    assert.match(text, /rainy street/)
+    // 光照排在环境之后，不能因为句子预算被挤掉。
+    assert.match(text, /overcast daylight/)
+    assert.ok(text.indexOf('rainy street') < text.indexOf('overcast daylight'))
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('moss Caption 不补 IR 里没有的东西，依据核对全部通过', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null })
+
+    assert.deepEqual(out.caption.grounding.unsupported, [])
+    assert.equal(out.caption.grounding.ok, true)
+    // 这几样都是「顺手写上去很像」的幻觉，必须一个都不出现。
+    const text = out.prompts.positive
+    for (const invented of ['blue eyes', 'pet', 'flower', 'cat', 'smile at the camera', 'soft morning light']) {
+      assert.equal(text.includes(invented), false, `Caption 补了 IR 里没有的「${invented}」`)
+    }
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('moss Caption 不重复同一件事，也不重复同一句', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null })
+    const text = out.prompts.positive
+
+    assert.equal(text.split('silver hair').length - 1, 1, 'silver hair 说了不止一次')
+    assert.equal(text.split('white blouse').length - 1, 1, 'white blouse 说了不止一次')
+    const sentences = text.split(/(?<=\.)\s+/).map((line) => line.trim()).filter(Boolean)
+    assert.equal(new Set(sentences).size, sentences.length, 'Caption 里有重复句')
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('moss 负向默认只有官方四条，不带 Illustrious 的大串标签', async () => {
+  const { store, moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null })
+    const terms = out.caption.negative.terms.map((term) => term.text)
+
+    assert.deepEqual(terms, [...MOSS_NEGATIVE_BASE])
+    assert.equal(terms.length <= 6, true)
+    // 这些是 Illustrious 负向的常客，MOSS 这边一个都不该有。
+    for (const tag of ['lowres', 'bad hands', 'signature', 'username', 'blurry', 'multiple girls']) {
+      assert.equal(terms.includes(tag), false, `moss 负向混进了标签档的「${tag}」`)
+    }
+
+    const illustrious = await compilePrompt({ ir, profile: store.getModelProfile('illustrious').config, kb: null })
+    assert.ok(out.prompts.negative.length < illustrious.prompts.negative.length)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('用户明确要求全年龄时才补 nsfw；模型自己判的 safe 不算', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const base = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const withRating = (source) => ({
+      ...base,
+      features: [
+        ...base.features,
+        { category: 'quality_style', key: 'rating', value: 'safe', confidence: 0.9, importance: 0.5, source, status: 'confirmed' },
+      ],
+    })
+
+    const declared = await compilePrompt({ ir: withRating('user_correction'), profile: moss.config, kb: null })
+    assert.equal(declared.caption.negative.terms.some((term) => term.text === 'nsfw'), true)
+    assert.ok(declared.diagnostics.some((item) => item.error_code === MOSS_CODES.NEGATIVE_SFW_ADDED))
+
+    const judged = await compilePrompt({ ir: withRating('global_analysis'), profile: moss.config, kb: null })
+    assert.equal(judged.caption.negative.terms.some((term) => term.text === 'nsfw'), false)
+    assert.equal(judged.diagnostics.some((item) => item.error_code === MOSS_CODES.NEGATIVE_SFW_ADDED), false)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('画面里的文字逐字保留原语言，不翻译也不改大小写', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const withText = {
+      ...ir,
+      entities: [
+        ...ir.entities,
+        {
+          entity_id: 'ent_sign',
+          kind: 'object',
+          label: 'shop sign',
+          count: 1,
+          confidence: 0.9,
+          importance: 0.4,
+          features: [{ category: 'text', key: 'text', value: '营业中 OPEN 24H', confidence: 0.9, importance: 0.4, status: 'confirmed' }],
+        },
+      ],
+    }
+    const out = await compilePrompt({ ir: withText, profile: moss.config, kb: null })
+
+    assert.ok(out.prompts.positive.includes('营业中 OPEN 24H'), `原文没有逐字保留：${out.prompts.positive}`)
+    assert.equal(out.prompts.positive.includes('open 24h'), false)
+    // 中文观察在 describe.js 那层会被剔掉（它只写英文句子），Caption 必须绕过那层自己取原文。
+    assert.ok(out.caption.clauses.some((clause) => clause.role === 'text'))
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('IR 里没有可写的事实时，moss 退回标签版并说明原因', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const empty = { schema_version: '1.0', entities: [], relations: [], features: [], uncertainties: [] }
+    const out = await compilePrompt({ ir: empty, profile: moss.config, kb: null })
+
+    assert.equal(out.caption.text, '')
+    assert.equal(out.register, 'tag')
+    assert.equal(out.prompts.positive, '')
+    assert.ok(out.diagnostics.some((item) => item.error_code === MOSS_CODES.CAPTION_EMPTY))
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('caption 档的返回仍只多一个 prompt_style 值，结果结构不变', () => {
+  const envelope = buildAnalysisEnvelope(
+    envelopeInputs({
+      compiled: {
+        ...envelopeInputs().compiled,
+        register: 'caption',
+        prompts: { positive: 'The image shows a girl.', description: 'The image shows a girl.', negative: 'worst quality' },
+        caption: { text: 'The image shows a girl.', stats: { sentences: 1 } },
+      },
+    }),
+  )
+  assert.deepEqual(Object.keys(envelope.result).sort(), ['image', 'prompt_style', 'prompts', 'target_profile'])
+  assert.equal(envelope.result.prompt_style, 'caption')
+  assert.equal(envelope.result.prompts.positive, 'The image shows a girl.')
+  // Caption 明细（分句、依据、丢弃事实）是分析过程，留在 trace 里；对话里只有正负向。
+  assert.equal(Object.hasOwn(envelope.result, 'caption'), false)
+  assert.equal(JSON.stringify(envelope).includes('"stats"'), false)
 })

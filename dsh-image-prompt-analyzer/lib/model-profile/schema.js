@@ -41,10 +41,15 @@ export const TAG_KINDS = Object.freeze([
  * `long_hair` 切出 3 个 token，`long hair` 只切 2 个，75 token 的窗口经不起这种浪费。
  * `underscored` 只为兼容旧档案保留，新档案不要再选。
  *
+ * `caption` 是第三条路：不走 compose.js 的成分句模板，而是走 lib/compile/moss.js，
+ * 按「主体 → 外观 → 动作 → 空间关系 → 构图 → 环境 → 光照 → 风格」写一整段连贯描述。
+ * 它给 MOSS-Image 这类读得懂空间关系的模型用；与 prose 的区别不是长短，是组织方式：
+ * prose 是标签串成的句子，caption 是对画面内容的描述。
+ *
  * `hybrid` 保留只是兼容旧档案：插件现在同时输出「纯标签版 + 描述版」，
  * 不存在把两者揉进一条提示词的档位，它等价于 spaced。
  */
-export const WORD_STYLES = Object.freeze(['underscored', 'spaced', 'prose', 'hybrid'])
+export const WORD_STYLES = Object.freeze(['underscored', 'spaced', 'prose', 'caption', 'hybrid'])
 
 export const CONFIDENCE_LEVELS = Object.freeze(['A', 'B', 'C'])
 

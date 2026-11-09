@@ -1,0 +1,119 @@
+{
+  "schema_version": "2.0",
+  "config_id": "moss",
+  "kind": "model_profile",
+  "display_name": "MOSS-Image",
+  "aliases": [
+    "moss-image",
+    "moss-image-base",
+    "moss-image-sft",
+    "openmoss",
+    "moss image"
+  ],
+  "tag_standard": {
+    "family": "moss",
+    "word_style": "caption",
+    "slot_order": [
+      "count",
+      "character",
+      "series",
+      "rating",
+      "general",
+      "artist",
+      "quality",
+      "score",
+      "meta"
+    ],
+    "slot_order_presets": [],
+    "default_slot_order_preset": null,
+    "quality_block": [],
+    "score_block": {
+      "mode": "none",
+      "terms": []
+    },
+    "rating_vocab": {
+      "safe": "safe",
+      "sensitive": "sensitive",
+      "nsfw": "nsfw",
+      "explicit": "explicit"
+    },
+    "rating_default": null,
+    "rating_emit": [],
+    "year_block": [],
+    "aesthetic_block": [],
+    "source_block": [],
+    "meta_block": [],
+    "forbidden_tags": [
+      "masterpiece",
+      "best quality",
+      "highres",
+      "absurdres",
+      "score_9",
+      "score_8_up",
+      "score_7_up"
+    ],
+    "negative": {
+      "required": true,
+      "terms": [
+        "worst quality",
+        "bad anatomy",
+        "watermark",
+        "jpeg artifact"
+      ],
+      "max_terms": 6,
+      "options": []
+    },
+    "budget": {
+      "positive_terms": null,
+      "negative_terms": 6,
+      "positive_tokens": null
+    },
+    "trim_order": [
+      "year",
+      "aesthetic",
+      "meta",
+      "appearance",
+      "clothing",
+      "background",
+      "expression",
+      "pose_action",
+      "subject",
+      "composition",
+      "camera",
+      "quality_style",
+      "lighting_color"
+    ],
+    "general_order": [
+      "subject",
+      "character",
+      "copyright",
+      "pose_action",
+      "clothing",
+      "appearance",
+      "expression",
+      "camera",
+      "composition",
+      "background",
+      "lighting_color"
+    ],
+    "weighting": {
+      "enabled": false,
+      "min_importance": 0.9,
+      "factor": 1.1,
+      "max_boosted": 0
+    },
+    "character_format": "{name}",
+    "artist_format": "{name}",
+    "artist_prefix": "",
+    "tag_rewrites": [],
+    "never_trim_tags": [],
+    "source_confidence": {
+      "level": "A",
+      "source": "OpenMOSS 官方 MOSS-Image 仓库与 USERGUIDE（github.com/OpenMOSS/MOSS-Image）",
+      "note": "官方支持自然语言描述、标签序列与 JSON Layout 三种写法；本档案只走自然语言 Caption。官方给出的负向基线为 nsfw / worst quality / bad anatomy / watermark / jpeg artifact，ComfyUI 官方模板同款；nsfw 只在用户明确要求全年龄时补，不无条件写入。质量词与评分词不进 Caption：MOSS 的 Caption 描述画面内容，不描述“这张图有多好”。"
+    }
+  },
+  "tag_mapping": {
+    "unknown_tag_policy": "description_only"
+  }
+}
