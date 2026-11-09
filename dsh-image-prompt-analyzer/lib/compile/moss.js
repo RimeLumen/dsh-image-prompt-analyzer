@@ -20,6 +20,7 @@
  */
 
 import { SEVERITY, diagnostic } from '../diagnostics.js'
+import { CAPTION_LANGUAGES } from '../model-profile/schema.js'
 import { isNegatedObservation, isPlaceholderObservation } from './terms.js'
 import { normalizePromptText } from './fidelity.js'
 
@@ -31,10 +32,24 @@ export const MOSS_REGISTER = 'caption'
 export const MOSS_CODES = Object.freeze({
   CAPTION_EMPTY: 'COMPILE_MOSS_CAPTION_EMPTY',
   CAPTION_UNGROUNDED: 'COMPILE_MOSS_CAPTION_UNGROUNDED',
+  CAPTION_LANGUAGE_UNSUPPORTED: 'COMPILE_MOSS_CAPTION_LANGUAGE_UNSUPPORTED',
   NEGATIVE_SFW_ADDED: 'COMPILE_MOSS_NEGATIVE_SFW_ADDED',
   NEGATIVE_CONTRADICTION_REMOVED: 'COMPILE_MOSS_NEGATIVE_CONTRADICTION_REMOVED',
   NEGATIVE_TRUNCATED: 'COMPILE_MOSS_NEGATIVE_TRUNCATED',
 })
+
+/**
+ * 能可靠产出的 Caption 语言。
+ *
+ * 只有英语。不是没做，是做不了：IR 的观察值全部是英语（视觉阶段就是这么被要求的），
+ * 本地 `res/` 里只有两份 Danbooru 标签表，没有任何中英对照资源。想输出中文，只有
+ * 两条路——再加一次 LLM 翻译，或者逐词替换——前者违反"不增加 AI 调用"，后者会把
+ * `silver hair` 拼成「银头发」这种既不是中文也不是英语的东西。两条都不做。
+ *
+ * 留着这个常量是为了让"要中文"这件事**明确失败**，而不是悄悄给一段英文。
+ * 清单本体放在 `model-profile/schema.js`：档案校验也要用它，档案层不该反过来依赖编译器。
+ */
+export const MOSS_CAPTION_LANGUAGES = CAPTION_LANGUAGES
 
 /**
  * 官方指南给的负向基线。
@@ -166,6 +181,11 @@ function personPhrase(entity) {
   const masculine = /^(boy|man)$/.test(singular)
   return {
     phrase,
+    // 原始标签要留着：台账按 `subject.count` = `1girl` 这个身份记事实，
+    // 只有原文能对上它。`phrase` 是给读者看的，不能拿去 join。
+    label,
+    noun: singular,
+    total,
     pronoun: feminine ? 'she' : masculine ? 'he' : 'they',
     possessive: feminine ? 'her' : masculine ? 'his' : 'their',
     plural,
@@ -292,16 +312,65 @@ function collectImageText(ir) {
 }
 
 /**
+ * 词形归一：只处理会改变"这个词是不是同一个词"的部分。
+ *
+ * 三种误报在这里被消掉：
+ *   1. 单复数——`hand` / `hands`，`girl` / `girls`。IR 写 `silver hair`，模板写
+ *      `with silver hair` 没问题，但关系句会把 `holds` 写成 `holding`，事实里却是
+ *      `right hand holds the umbrella handle`。
+ *   2. 连字符与下划线——`silver-haired`、`long_hair`。`normalizePromptText` 已经把
+ *      这两类拆成空格，所以复合词天然按词分别核对，不需要额外规则。
+ *   3. 所有格——`girl's` 被切成 `girl` + `s`，`s` 只有一字母会被长度过滤掉。
+ *
+ * 不做词干还原（`holding` → `hold`）：那需要词典，猜错的方向是把"没写的东西"
+ * 判成"写过"，而这里的错判必须是保守的——宁可多报一个待验证词，也不能放过幻觉。
+ */
+function stemWord(word) {
+  const value = String(word ?? '')
+  if (value.length <= 3) return value
+  // 只认规则明确的几种，且不把 `s` 结尾的词当动词再拆一层。
+  // `blouses` 走 `s` 规则得到 `blouse`；`boxes` 走 `es` 规则得到 `box`。
+  // 先试 `es` 再试 `s`：`es` 那条更窄，命中就说明确实是 s/x/z/ch/sh 结尾。
+  if (value.endsWith('ies')) return `${value.slice(0, -3)}y`
+  if (value.endsWith('es') && /(?:s|x|z|ch|sh)$/.test(value.slice(0, -2))) return value.slice(0, -2)
+  if (value.endsWith('s') && !value.endsWith('ss')) return value.slice(0, -1)
+  return value
+}
+
+/**
+ * 一个词的全部可接受形态：原形、去复数、去 `es`、`ies` 还原。
+ *
+ * 逐条比对而不是只取一个 stem，是因为 `blouses` 既可能来自 `blouse`（加 s）
+ * 也可能被 `es` 规则误拆成 `blous`。多给几个候选，任何一条命中就放行，
+ * 但候选本身仍然由事实词生成——不会因此放过一个 IR 里没有的词。
+ */
+function wordForms(word) {
+  const value = String(word ?? '')
+  const forms = new Set([value, stemWord(value)])
+  if (value.endsWith('es')) forms.add(value.slice(0, -2))
+  if (value.endsWith('s') && !value.endsWith('ss')) forms.add(value.slice(0, -1))
+  if (value.endsWith('ies')) forms.add(`${value.slice(0, -3)}y`)
+  return forms
+}
+
+/**
  * Caption 的依据校验。
  *
  * 与 `describe.js` 的区别：那边按"观察原话的用词"核对，这边额外放行语法骨架词
  * （见 CAPTION_SCAFFOLDING）。骨架词只描述取景框与句法，不指认任何画面对象，
  * 所以它们不是"补出来的内容"。任何其他词都必须能在用到的 IR 事实里找到。
+ *
+ * 白名单刻意窄：只有句法词、取景框词、代词、介词、冠词、数词。形容词、颜色、
+ * 材质、物体名一律不进去——那些正是幻觉最容易藏身的地方。
  */
 export function verifyCaptionGrounding({ text, facts } = {}) {
   const factWords = new Set()
+  const factForms = new Set()
   for (const fact of Array.isArray(facts) ? facts : []) {
-    for (const word of wordsOf(fact?.text)) factWords.add(word)
+    for (const word of wordsOf(fact?.text)) {
+      factWords.add(word)
+      for (const form of wordForms(word)) factForms.add(form)
+    }
   }
   const unsupported = []
   let checked = 0
@@ -309,6 +378,7 @@ export function verifyCaptionGrounding({ text, facts } = {}) {
     if (word.length < 2) continue
     checked += 1
     if (factWords.has(word)) continue
+    if ([...wordForms(word)].some((form) => factForms.has(form))) continue
     if (CAPTION_SCAFFOLDING.has(word)) continue
     if (!unsupported.includes(word)) unsupported.push(word)
   }
@@ -324,10 +394,40 @@ export function verifyCaptionGrounding({ text, facts } = {}) {
  * @param {Array} options.facts `collectDescriptionFacts` 产出的事实（已去重、已剔否定式）
  * @param {string|null} options.detailLevel minimal / standard / high
  * @param {string|null} options.character 用户显式声明的角色名
+ * @param {string|null} options.language 目标语言；只有 `en` 有可靠数据来源
  */
-export function composeMossCaption({ ir = null, profile = {}, facts = [], detailLevel = null, character = null } = {}) {
+export function composeMossCaption({ ir = null, profile = {}, facts = [], detailLevel = null, character = null, language = null } = {}) {
   const diagnostics = []
   const budget = detailBudget(detailLevel)
+  const wantedLanguage = String(language ?? profile?.tag_standard?.caption_language ?? 'en').trim() || 'en'
+
+  if (!MOSS_CAPTION_LANGUAGES.includes(wantedLanguage)) {
+    diagnostics.push(
+      diagnostic({
+        error_code: MOSS_CODES.CAPTION_LANGUAGE_UNSUPPORTED,
+        severity: SEVERITY.ERROR,
+        field_path: '/tag_standard/caption_language',
+        message: `Caption 只有英语可用，请求的语言是 ${wantedLanguage}。`,
+        suggested_fix:
+          'IR 的观察值全是英语，本地也没有中英对照资源；要出中文只能再加一次翻译调用，那是本插件明确不做的。把 caption_language 设回 en。',
+      }),
+    )
+    return {
+      schema_version: MOSS_SCHEMA_VERSION,
+      register: MOSS_REGISTER,
+      profile: profile?.config_id ?? null,
+      language: wantedLanguage,
+      ok: false,
+      text: '',
+      clauses: [],
+      facts_used: [],
+      facts_dropped: Array.isArray(facts) ? facts : [],
+      grounding: { ok: false, basis: 'ir_facts', unsupported: [], checked_words: 0 },
+      stats: { facts: 0, used: 0, dropped: 0, sentences: 0, clauses: 0, chars: 0 },
+      diagnostics,
+    }
+  }
+
   const pool = (Array.isArray(facts) ? facts : [])
     .filter((fact) => fact && typeof fact.text === 'string' && fact.text.trim().length > 0 && !fact.dropped)
     .map((fact) => ({ ...fact, text: fact.text.trim() }))
@@ -343,7 +443,10 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
   const clauses = []
   const used = []
 
-  const take = (role, text, factList = []) => {
+  // `extraRefs` 给"这句话的依据不是某条事实、而是一个实体标签"的情况用：
+  // 主体那句里的 `a girl` 来自 entity.label，标签本身就是观察，但没有对应的
+  // fact 对象可挂。不传这一项，台账只能把它记成"没有依据"。
+  const take = (role, text, factList = [], extraRefs = []) => {
     const body = String(text ?? '').trim()
     if (body.length === 0) return false
     if (sentences.length >= budget.maxSentences) return false
@@ -352,7 +455,7 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
       role,
       text: body,
       tags: factList.map((fact) => fact.text),
-      source_refs: dedupeRefs(factList.flatMap((fact) => fact.source_refs ?? [])),
+      source_refs: dedupeRefs([...factList.flatMap((fact) => fact.source_refs ?? []), ...extraRefs]),
     })
     for (const fact of factList) if (!used.includes(fact)) used.push(fact)
     return true
@@ -379,6 +482,29 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
   const lead = typeof character === 'string' && character.trim().length > 0
     ? character.trim().replace(/_/g, ' ')
     : subject?.phrase ?? ''
+  // 主体这句话的来源要跟着走。`a girl` 不是凭空来的：它来自实体标签，标签本身
+  // 就是 IR 里的一条观察。不把这条 ref 挂上去，台账会报"这句话没有依据"。
+  //
+  // `subject.count` 那条顶层观察（`1girl`）也要认：实体标签常常只写 `girl`，
+  // 人数在另一条观察里。两边按"人数 + 名词"对齐，不按整串字面比——
+  // 字面比会让 `1girl` 与 `girl` 对不上，明明是同一件事。
+  const subjectFacts = (() => {
+    const total = subject?.total ?? 1
+    const noun = String(subject?.noun ?? '').toLowerCase()
+    if (noun === '') return []
+    return pool.filter((fact) => {
+      if (String(fact.category ?? '') !== 'subject') return false
+      if (fact.entity_id && subject?.entity_id && fact.entity_id !== subject.entity_id) return false
+      const match = /^(\d+)?\s*([a-z]+)$/i.exec(String(fact.text ?? '').trim())
+      if (!match) return false
+      const count = match[1] ? Number(match[1]) : 1
+      const word = match[2].toLowerCase().replace(/s$/, '')
+      return count === total && word === noun.replace(/s$/, '')
+    })
+  })()
+  const subjectRefs = subject?.entity_id
+    ? [{ kind: 'entity_label', entity_id: subject.entity_id, entity_kind: 'person' }]
+    : []
   if (lead) {
     // `with ...` 直接挂在名词后面，不加逗号：`a girl, with silver hair` 会把外观写成插入语，
     // 读起来像另一个人。服装另起一段才用逗号。
@@ -387,12 +513,17 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
     if (clothing.length > 0) bits.push(`wearing ${joinList(clothing.map((fact) => withArticle(fact.text)))}`)
     const head = bits.length > 0 ? `${lead} ${bits[0]}` : lead
     const tail = bits.slice(1).join(', ')
-    take('subject', `The image shows ${head}${tail.length > 0 ? `, ${tail}` : ''}.`, [...appearance, ...clothing])
+    take(
+      'subject',
+      `The image shows ${head}${tail.length > 0 ? `, ${tail}` : ''}.`,
+      [...appearance, ...clothing, ...subjectFacts],
+      subjectRefs,
+    )
   } else {
     const firstEntity = (Array.isArray(ir?.entities) ? ir.entities : [])[0] ?? null
     const label = typeof firstEntity?.label === 'string' ? withArticle(firstEntity.label) : ''
     const backdrop = pick('background')[0] ?? null
-    if (label) take('subject', `The image shows ${label}.`, [])
+    if (label) take('subject', `The image shows ${label}.`, [], subjectRefs)
     else if (backdrop) take('subject', `The image shows ${withArticle(backdrop.text)}.`, [backdrop])
   }
 
@@ -481,14 +612,19 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
   const groundingFacts = lead ? [...used, { text: lead }] : used
   const grounding = verifyCaptionGrounding({ text, facts: groundingFacts })
   const dropped = pool.filter((fact) => !used.includes(fact))
+  const ok = text.length > 0
 
-  if (text.length === 0) {
+  if (!ok) {
+    // 硬失败，不是降级：MOSS 档案的正稿只能是一段 Caption。退回标签流会让调用方
+    // 以为拿到了 MOSS 能用的东西，实际送进去的是一串 Danbooru 词——那既不描述画面，
+    // 也不在 MOSS 的训练分布里。宁可不给，也不给一个看起来成功的错东西。
     diagnostics.push(
       diagnostic({
         error_code: MOSS_CODES.CAPTION_EMPTY,
-        severity: SEVERITY.WARNING,
-        message: 'IR 里没有可写进 Caption 的事实，MOSS 正向会退回标签版。',
-        suggested_fix: '检查视觉分析是否产出了主体、构图、背景等观察；空 IR 编译不出任何写法。',
+        severity: SEVERITY.ERROR,
+        message: 'IR 里没有能写进 Caption 的事实，本次 MOSS 编译失败，没有生成任何提示词。',
+        suggested_fix:
+          '检查视觉分析是否产出了主体、构图、背景等观察，或 IR 里的观察是否全被否定式/占位符/测量值过滤掉了。',
       }),
     )
   } else if (!grounding.ok) {
@@ -506,6 +642,8 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
     schema_version: MOSS_SCHEMA_VERSION,
     register: MOSS_REGISTER,
     profile: profile?.config_id ?? null,
+    language: wantedLanguage,
+    ok,
     text,
     clauses,
     facts_used: used,
@@ -592,13 +730,15 @@ export function buildMossNegative({ ir = null, profile = {}, includeNegative = t
       const words = wordsOf(terms[index].text)
       if (words.length === 0) continue
       if (!words.every((word) => positive.has(word))) continue
+      // 先取出来再删：splice 之后 terms[index] 已经是下一条，消息会写成空字符串。
+      const removed = terms[index]
       terms.splice(index, 1)
       stats.removed_contradictions += 1
       diagnostics.push(
         diagnostic({
           error_code: MOSS_CODES.NEGATIVE_CONTRADICTION_REMOVED,
           severity: SEVERITY.INFO,
-          message: `正文里已经写了「${terms[index]?.text ?? ''}」，负向里的同名词已让开。`,
+          message: `正文里已经写了「${removed.text}」，负向里的同名词已让开。`,
         }),
       )
     }

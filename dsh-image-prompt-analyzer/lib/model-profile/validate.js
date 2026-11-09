@@ -1,5 +1,6 @@
 
 import {
+  CAPTION_LANGUAGES,
   CONFIDENCE_LEVELS,
   GENERAL_CATEGORY_IDS,
   MODEL_PROFILE_SCHEMA_VERSION,
@@ -28,6 +29,7 @@ export const TAG_STANDARD_CODES = Object.freeze({
   TRIM_ORDER_UNKNOWN_SLOT: 'TAG_STANDARD_TRIM_ORDER_UNKNOWN_SLOT',
   DATA_SOURCE_MISSING: 'TAG_STANDARD_DATA_SOURCE_MISSING',
   CONFIDENCE_INVALID: 'TAG_STANDARD_CONFIDENCE_INVALID',
+  CAPTION_LANGUAGE_UNSUPPORTED: 'TAG_STANDARD_CAPTION_LANGUAGE_UNSUPPORTED',
 })
 
 const REQUIRED_SLOTS = Object.freeze(['general'])
@@ -139,9 +141,26 @@ export function validateModelProfile(doc, { configFile = null } = {}) {
         TAG_STANDARD_CODES.WORD_STYLE_INVALID,
         '/tag_standard/word_style',
         `word_style 必须是 ${WORD_STYLES.join(' 或 ')}，当前是 ${JSON.stringify(tagStandard.word_style)}。`,
-        '按目标模型词表约定选：标签型模型用 spaced（Illustrious / Animagine 都是，下划线会多花 token），吃自然语言的模型用 prose。',
+        '按目标模型词表约定选：标签型模型用 spaced（Illustrious / Animagine 都是，下划线会多花 token），吃自然语言的模型用 prose，Caption 型模型用 caption。',
       ),
     )
+  }
+
+  // Caption 档案可以声明自己只写哪种语言。写错语言不是小事：编译器会直接拒绝出稿，
+  // 但如果档案里把语言码拼错了，用户拿到的是一句"这个语言不支持"，看不出是自己拼错。
+  if (tagStandard.caption_language !== undefined && tagStandard.caption_language !== null) {
+    const language = String(tagStandard.caption_language).trim()
+    if (language !== '' && !CAPTION_LANGUAGES.includes(language)) {
+      diagnostics.push(
+        diagnostic(
+          configFile,
+          TAG_STANDARD_CODES.CAPTION_LANGUAGE_UNSUPPORTED,
+          '/tag_standard/caption_language',
+          `caption_language 目前只支持 ${CAPTION_LANGUAGES.join(' / ')}，当前是 ${JSON.stringify(tagStandard.caption_language)}。`,
+          'Caption 直接从 IR 观察值编译，而 IR 里的观察值是英语；要中文必须另加一层翻译，那是另一次模型调用，不在本插件范围内。',
+        ),
+      )
+    }
   }
 
   const presets = asArray(tagStandard.slot_order_presets)

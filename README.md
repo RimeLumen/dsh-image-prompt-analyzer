@@ -86,7 +86,7 @@ Analyze this image with the illustrious profile:
 
 本插件是纯对话形态：没有侧栏入口，也没有网页工作台，所有能力都以工具形式暴露给模型。
 
-`target_profile` 没有默认值 —— 不传会返回 `MODEL_PROFILE_NOT_SELECTED`。从随包发布的两个档案里选一个。
+`target_profile` 没有默认值 —— 不传会返回 `MODEL_PROFILE_NOT_SELECTED`。从随包发布的三个档案里选一个。
 
 ---
 
@@ -94,7 +94,7 @@ Analyze this image with the illustrious profile:
 
 | 工具 | 作用 |
 |---|---|
-| `analyze_image_prompt` | 主入口。图片 → IR → 提示词。返回标签版、描述版、抑制提示词、槽位明细与逐条观察的诊断。 |
+| `analyze_image_prompt` | 主入口。图片 → IR → 提示词。返回标签版、描述版、抑制提示词、槽位明细与逐条观察的诊断。MOSS 档案给 Caption；传 `layout: true` 额外排一份 JSON Layout（元素 + 坐标）。 |
 | `preview_model_profile` | 把一个示例 IR 过一遍档案编译器，**不调用**任何视觉模型 —— 在真正花一次调用之前，先看清这套档案会编译出什么。 |
 | `validate_configs` | 对随包配置与用户覆盖配置做静态校验：JSON 语法、schema 版本、必需字段、ID 重复、悬空引用。 |
 | `diagnose_knowledge_base` | SQLite 知识库能不能打开、可不可写、schema 版本是什么、里面有多少标签、最近一次导入是什么时候。 |
@@ -163,8 +163,13 @@ Animagine XL 4.0 刻意留在标签路径上 —— 它的 Model Card 限定它�
 |---|---|---|
 | Illustrious XL | `illustrious` | `masterpiece, best quality, very aesthetic, absurdres`，标签语域 |
 | Anima | `anima` | 正向走自然语言描述版（`word_style: prose`），`high score` 质量块 |
+| MOSS-Image | `moss` | 正向走完整 Caption（`word_style: caption`），负向只有官方四条；可选 JSON Layout |
 
 `anima` 曾用名 `animagine-xl-4.0`，`AnimaImage`、`animagine`、`animagine-xl` 也都是它的别名——同一份档案，不是多个模型。旧名写在 `aliases` 里，按旧名查照样解析到 `anima`；忽略大小写与 `- _ . 空白` 的写法（`AnimaImage`、`ANIMAGINE-XL-4.0`）也能查到。别名冲突时不猜，直接报找不到。
+
+`moss` 的别名覆盖 `moss-image`、`moss-image-base`、`moss-image-sft`、`openmoss`、`moss image`：Base 与 SFT 共用同一套 Caption 规则，不为它们各建一份模板。
+
+三档的写法差异、Caption 的编译规则、Layout 的坐标约定，见 [docs/model-profiles.md](dsh-image-prompt-analyzer/docs/model-profiles.md)。
 
 新增一个模型就是在 `configs/model-profiles/` 里加一个 JSON 文件 —— 不用改代码。
 
@@ -453,11 +458,15 @@ comfyui:
 | `PYTHON_UNAVAILABLE` | `python.executable` 解析不到，或 `python.enabled: false` | 把 `python.executable` 设成解释器的绝对路径 |
 | `KB_EMPTY` / 标签行异常地长 | 知识库还没建 | 跑一次 `rebuild_knowledge_base` |
 | `KB_IMPORT_FILE_UNREADABLE` | `sources[].path` 指向的文件不存在 | 对照 `res/` 检查 `configs/knowledge-base.default.json` |
-| `MODEL_PROFILE_NOT_SELECTED` | 没传 `target_profile` | 传 `illustrious` 或 `anima` |
+| `MODEL_PROFILE_NOT_SELECTED` | 没传 `target_profile` | 传 `illustrious`、`anima` 或 `moss` |
+| `COMPILE_MOSS_CAPTION_EMPTY` | IR 里没有能写进 Caption 的事实 | 这是硬失败，`prompts.positive` 是空的；不会退回标签流。检查这次反推是不是什么也没观察到 |
+| `COMPILE_MOSS_LAYOUT_EMPTY` | 要了 Layout，但 IR 里一个可靠 region 都没有 | 坐标只能来自 IR，不会凭空补。关掉 `layout` 用 Caption，或先解决反推拿不到位置的问题 |
+| `TAG_STANDARD_CAPTION_LANGUAGE_UNSUPPORTED` | 档案里 `tag_standard.caption_language` 写了 `en` 以外的值 | 当前只有英语 Caption 可用，改回 `en` |
 | `COMFY_CAPABILITY_UNAVAILABLE`（`comfyui_start`） | 没找到启动器，或没找到 python 解释器，或 Host 没有 `subprocess` 服务 | 看报错里列出的 `scanned_paths`；手填 `comfyui.installRoot` 指向真正的安装根 |
 | `COMFY_BINDING_AMBIGUOUS` | 安装根和上一级里找到多个启动器 | 报错里会列出全部候选；手动打开你要用的那个 |
 | `COMFY_TARGET_NOT_LOCAL` | `baseUrl` 或 `open_web_ui` 的目标不是回环地址 | 改回 `127.0.0.1` / `localhost` / `::1`；插件不会退回默认地址偷偷连本机 |
 | `COMFY_PATH_DENIED` | Host 文件系统服务拒绝了这次读取 | 这是终点，插件不会换 `node:fs` 绕过；检查路径权限或把它移出受保护目录 |
+| `COMFY_PROMPT_ENHANCER_DETECTED` | `comfyui_inspect_workflow` 在提示词链路上发现了改写节点 | 这是提醒不是错误：要逐词可追溯的 Caption / Layout，就在 ComfyUI 里把那个节点旁路掉。插件不会改你的工作流 |
 | 卡片显示「重试」 | 同源路由没挂上，退回的跨源地址被 CSP 拦掉 | 确认 profile 里有 `webServer`；重载插件后再查一次任务 |
 | `COMFY_SUBMISSION_UNKNOWN` | 提交超时或断连，服务端到底收没收到不知道 | 去 ComfyUI 队列里看一眼；**插件不会自动重发**，重发前先确认队列里没有 |
 

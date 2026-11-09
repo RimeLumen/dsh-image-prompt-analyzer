@@ -53,6 +53,18 @@ export const WORD_STYLES = Object.freeze(['underscored', 'spaced', 'prose', 'cap
 
 export const CONFIDENCE_LEVELS = Object.freeze(['A', 'B', 'C'])
 
+/**
+ * Caption 档案能写哪种语言。
+ *
+ * 只有英语。不是因为不想支持中文，是因为数据不够：Caption 的每个词都得能落到
+ * 一条 IR 观察上，而 IR 里的观察值（`silver hair`、`rainy street`）是英语——
+ * 这是视觉阶段按 Danbooru 口径产出的，不是随手写的常量。要中文只有两条路：
+ * 加一次 LLM 翻译（多一次模型调用，且译文不再逐词可溯源），或者维护一张
+ * 中英对照表（`res/` 里只有两份 Danbooru 标签表，没有这种东西）。
+ * 两条都不做，所以这里只有 en，写别的语言会编译失败而不是悄悄输出英文。
+ */
+export const CAPTION_LANGUAGES = Object.freeze(['en'])
+
 export const GENERAL_CATEGORY_IDS = Object.freeze(
   INTERNAL_CATEGORIES.filter((c) => CATEGORY_IDS.has(c.category_id))
     .map((c) => c.category_id)

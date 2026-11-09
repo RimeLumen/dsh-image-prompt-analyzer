@@ -25,6 +25,9 @@ export const CHANNELS = Object.freeze({
   TAGS: 'tags',
   DESCRIPTION: 'description',
   CANDIDATE: 'candidate',
+  // Caption 档的成品通道。它与其他三个互斥：caption 档不出标签版，
+  // 也不出那两个描述版，所以台账在那条路上只认这一个通道。
+  CAPTION: 'caption',
   NONE: 'none',
 })
 
@@ -49,6 +52,8 @@ export const LEDGER_STAGES = Object.freeze({
   SLOT: 'slot',
   BUDGET: 'budget',
   RENDER: 'render',
+  // Caption 档独有：事实走到了，但没被写进那段描述（同类里排在预算之外）。
+  CAPTION: 'caption',
 })
 
 export function factId({ kind = 'feature', category = '', key = '', entity_id = null, relation_id = null, occurrence = 0 } = {}) {
@@ -382,6 +387,30 @@ export function buildFactLedger({ ir, irBeforeEvidence = null, compiled = null, 
     }
   }
 
+  // ---- Caption：clause 自己带着 source_refs，按身份对齐，不按文本猜 ----
+  //
+  // Caption 档的成品就是这段描述，标签版与两个描述版都不参与出稿。台账如果照旧
+  // 只认那三个通道，caption 档会报成"一条都没进"，而正稿明明写满了事实——
+  // 这种台账比没有台账更误导人。
+  const captionMode = String(compiled?.register ?? '') === 'caption'
+  const captionRefs = new Set()
+  const captionDropped = new Map()
+  if (captionMode) {
+    const caption = compiled?.caption ?? null
+    for (const clause of Array.isArray(caption?.clauses) ? caption.clauses : []) {
+      for (const ref of Array.isArray(clause?.source_refs) ? clause.source_refs : []) {
+        const id = candidateRefId(ref)
+        if (id) captionRefs.add(id)
+      }
+    }
+    for (const fact of Array.isArray(caption?.facts_dropped) ? caption.facts_dropped : []) {
+      for (const ref of Array.isArray(fact?.source_refs) ? fact.source_refs : []) {
+        const id = candidateRefId(ref)
+        if (id) captionDropped.set(id, fact?.dropped ?? '没被写进 Caption（同类事实里排在预算之外）')
+      }
+    }
+  }
+
   // ---- 逐条成账 ----
   const records = facts.map((fact) => {
     const own = termIndex.get(fact.fact_id) ?? []
@@ -390,14 +419,21 @@ export function buildFactLedger({ ir, irBeforeEvidence = null, compiled = null, 
     const inTags = tagRefs.has(fact.fact_id)
     const inDescription = descriptionRefs.has(fact.fact_id)
     const inCandidate = candidateRefs.has(fact.fact_id)
+    const inCaption = captionRefs.has(fact.fact_id)
 
     const evidenceChange = evidence?.rewritten.find((item) => item.fact_id === fact.fact_id) ?? null
     const injectedByEvidence = evidence?.injected.some((item) => item.fact_id === fact.fact_id) ?? false
 
+    // Caption 档只有一个成品通道。标签版与两个描述版在那一档里根本不参与出稿，
+    // 把它们列成"缺通道"等于每条观察都报三个假缺口。
     const channels = []
-    if (inTags) channels.push(CHANNELS.TAGS)
-    if (inDescription) channels.push(CHANNELS.DESCRIPTION)
-    if (inCandidate) channels.push(CHANNELS.CANDIDATE)
+    if (captionMode) {
+      if (inCaption) channels.push(CHANNELS.CAPTION)
+    } else {
+      if (inTags) channels.push(CHANNELS.TAGS)
+      if (inDescription) channels.push(CHANNELS.DESCRIPTION)
+      if (inCandidate) channels.push(CHANNELS.CANDIDATE)
+    }
 
     // 缺了哪些通道要单独写出来。
     //
@@ -405,14 +441,21 @@ export function buildFactLedger({ ir, irBeforeEvidence = null, compiled = null, 
     // 真跑里 17 条高重要度观察只在描述版、标签版完全没有，旧字段上它们与三通道齐全的
     // 记录一模一样——这正是"任一通道出现就算全部保留"的漏洞所在。
     // 只有真的进了至少一个通道时，缺的那几个才叫"通道差"；一个都没进的是丢弃或未到达。
-    const allChannels = [CHANNELS.TAGS, CHANNELS.DESCRIPTION, CHANNELS.CANDIDATE]
+    const allChannels = captionMode
+      ? [CHANNELS.CAPTION]
+      : [CHANNELS.TAGS, CHANNELS.DESCRIPTION, CHANNELS.CANDIDATE]
     const missingChannels = channels.length === 0 ? allChannels.slice() : allChannels.filter((item) => !channels.includes(item))
 
+    // 处置先看"进没进成品"，再看"有没有变成词条"。
+    //
+    // 顺序反过来的话，关系观察会被记成 `unknown`：关系不进词条表（`own.length === 0`），
+    // 但它确实被写进了 Caption 里那句话。台账一边说"去向未知"，一边 `channels` 里
+    // 明明白白写着 caption，读者只能二选一信。
     let disposition
-    if (own.length === 0) {
-      disposition = skips.length > 0 || drops.length > 0 ? DISPOSITIONS.DROPPED : DISPOSITIONS.UNKNOWN
-    } else if (channels.length > 0) {
+    if (channels.length > 0) {
       disposition = evidenceChange ? DISPOSITIONS.REWRITTEN : DISPOSITIONS.RETAINED
+    } else if (own.length === 0) {
+      disposition = skips.length > 0 || drops.length > 0 ? DISPOSITIONS.DROPPED : DISPOSITIONS.UNKNOWN
     } else {
       disposition = DISPOSITIONS.DROPPED
     }
@@ -420,13 +463,17 @@ export function buildFactLedger({ ir, irBeforeEvidence = null, compiled = null, 
     // 缺通道的理由要分两种：一种是我们按规则挡的（不是丢失），一种是真没走到。
     // 混在一起看，17 条"标签版没有"会被当成 17 条事故。
     const channelNotes = {}
-    if (!inTags && own.length > 0) {
-      channelNotes[CHANNELS.TAGS] = tagExcludedRefs.has(fact.fact_id)
-        ? '带介词的半句话，按规则不进标签版'
-        : null
-    }
-    if (!inCandidate && own.length > 0) {
-      channelNotes[CHANNELS.CANDIDATE] = candidateDropped.get(fact.fact_id) ?? null
+    if (!captionMode) {
+      if (!inTags && own.length > 0) {
+        channelNotes[CHANNELS.TAGS] = tagExcludedRefs.has(fact.fact_id)
+          ? '带介词的半句话，按规则不进标签版'
+          : null
+      }
+      if (!inCandidate && own.length > 0) {
+        channelNotes[CHANNELS.CANDIDATE] = candidateDropped.get(fact.fact_id) ?? null
+      }
+    } else if (!inCaption && own.length > 0) {
+      channelNotes[CHANNELS.CAPTION] = captionDropped.get(fact.fact_id) ?? null
     }
 
     // 最早一次丢弃就是它"消失的那一步"：后面的步骤只是没机会再处理它。
@@ -460,6 +507,17 @@ export function buildFactLedger({ ir, irBeforeEvidence = null, compiled = null, 
     }
     const phraseLosses = wholeObservationLost ? [] : uniqueLosses
 
+    // Caption 档：事实走到了编译层、也进了词条，只是没被写进那段描述。
+    // 这跟"在 collect 阶段被否定掉"是两件事，不能都报成"未知阶段丢弃"。
+    const captionMiss =
+      captionMode && wholeObservationLost && own.length > 0
+        ? {
+            stage: LEDGER_STAGES.CAPTION,
+            reason: captionDropped.get(fact.fact_id) ?? '没被写进 Caption（同类事实里排在预算之外）',
+          }
+        : null
+    const lost = captionMiss ?? (wholeObservationLost && firstLoss ? { stage: firstLoss.stage, reason: firstLoss.reason } : null)
+
     return {
       fact_id: fact.fact_id,
       kind: fact.kind,
@@ -480,13 +538,14 @@ export function buildFactLedger({ ir, irBeforeEvidence = null, compiled = null, 
       in_tags: inTags,
       in_description: inDescription,
       in_candidate: inCandidate,
+      in_caption: inCaption,
       rewritten_at: evidenceChange ? LEDGER_STAGES.EVIDENCE : null,
       rewritten_from: evidenceChange ? evidenceChange.before : null,
       rewritten_to: evidenceChange ? evidenceChange.after : null,
       rewrite_note: evidenceChange ? evidenceChange.note : null,
       injected_by_evidence: injectedByEvidence,
-      dropped_at: wholeObservationLost && firstLoss ? firstLoss.stage : null,
-      dropped_reason: wholeObservationLost && firstLoss ? firstLoss.reason : null,
+      dropped_at: lost ? lost.stage : null,
+      dropped_reason: lost ? lost.reason : null,
       // 分句级丢弃单独记：观察还在，只是其中一句没写进去。
       dropped_phrases: phraseLosses,
       candidate_dropped_reason: candidateDropped.get(fact.fact_id) ?? null,
@@ -525,12 +584,21 @@ export function buildFactLedger({ ir, irBeforeEvidence = null, compiled = null, 
     in_tags: records.filter((item) => item.in_tags).length,
     in_description: records.filter((item) => item.in_description).length,
     in_candidate: records.filter((item) => item.in_candidate).length,
+    in_caption: records.filter((item) => item.in_caption).length,
     // 三个通道齐全 / 只进了其中一部分。分开数，免得"进了描述版"被当成"都保住了"。
-    retained_all_channels: records.filter((item) => item.channels.length === 3).length,
-    retained_partial: records.filter((item) => item.channels.length > 0 && item.channels.length < 3).length,
-    missing_from_tags: records.filter((item) => item.channels.length > 0 && !item.in_tags).length,
-    missing_from_description: records.filter((item) => item.channels.length > 0 && !item.in_description).length,
-    missing_from_candidate: records.filter((item) => item.channels.length > 0 && !item.in_candidate).length,
+    // caption 档只有一个通道，这两个数字在那里没有意义，直接给 null，
+    // 免得读者拿 0 当"一条都没保住"。
+    retained_all_channels: captionMode ? null : records.filter((item) => item.channels.length === 3).length,
+    retained_partial: captionMode
+      ? null
+      : records.filter((item) => item.channels.length > 0 && item.channels.length < 3).length,
+    missing_from_tags: captionMode ? null : records.filter((item) => item.channels.length > 0 && !item.in_tags).length,
+    missing_from_description: captionMode
+      ? null
+      : records.filter((item) => item.channels.length > 0 && !item.in_description).length,
+    missing_from_candidate: captionMode
+      ? null
+      : records.filter((item) => item.channels.length > 0 && !item.in_candidate).length,
     // 其中"按规则挡在标签版外面"的那部分：不是丢失，是规则。
     tags_excluded_by_rule: records.filter((item) => item.channel_notes?.[CHANNELS.TAGS]).length,
     evidence_rewritten: evidence?.rewritten.length ?? null,
@@ -602,10 +670,14 @@ function candidateRefId(ref) {
  */
 export function explainFact(record) {
   if (!record) return '台账里没有这条观察。'
-  const where = []
-  if (record.in_tags) where.push('标签版')
-  if (record.in_description) where.push('默认描述版')
-  if (record.in_candidate) where.push('候选描述版')
+  // 去向按 `channels` 说，不按 in_* 三个布尔说。
+  //
+  // caption 档里标签版仍然会被渲染出来（只是不用它的成品），于是 `in_tags` 可能是
+  // true 而 channels 里只有 caption——照 in_* 说会写出"最终进入：标签版"这种
+  // 与 disposition 自相矛盾的话。channels 本身就是按档位算好的，直接读它。
+  const labelOf = { tags: '标签版', description: '默认描述版', candidate: '候选描述版', caption: 'Caption' }
+  const present = Array.isArray(record.channels) ? record.channels : []
+  const where = present.map((item) => labelOf[item] ?? item)
   const parts = []
   if (record.rewritten_at) {
     parts.push(`在${record.rewritten_at}阶段被改写：「${record.rewritten_from}」→「${record.rewritten_to}」`)
@@ -618,16 +690,20 @@ export function explainFact(record) {
   const absences = Array.isArray(record.local_absences) ? record.local_absences : []
   if (absences.length > 0) {
     const detail = absences.map((item) => {
-      const where = item.crop_id ? `（${item.crop_id}）` : ''
+      const spot = item.crop_id ? `（${item.crop_id}）` : ''
       return item.scope === 'frame'
-        ? `「${item.value}」${where}——它想据此断言全图没有，已降级成待裁决事实`
-        : `「${item.value}」${where}——这句只在那块裁图里成立`
+        ? `「${item.value}」${spot}——它想据此断言全图没有，已降级成待裁决事实`
+        : `「${item.value}」${spot}——这句只在那块裁图里成立`
     })
     const kept = absences.map((item) => item.kept_global).find((value) => typeof value === 'string' && value !== '')
     parts.push(`局部复核提过 ${detail.join('；')}，没有据此改动全局${kept ? `（全局仍是「${kept}」）` : ''}`)
   }
   if (record.disposition === DISPOSITIONS.DROPPED) {
-    parts.push(`在${record.dropped_at ?? '未知'}阶段被丢弃（原因：${record.dropped_reason ?? '未标注'}）`)
+    parts.push(
+      record.dropped_at === LEDGER_STAGES.CAPTION
+        ? `没被写进 Caption（原因：${record.dropped_reason ?? '未标注'}）`
+        : `在${record.dropped_at ?? '未知'}阶段被丢弃（原因：${record.dropped_reason ?? '未标注'}）`,
+    )
   }
   // 观察还在、但其中几个分句没写进去：这是"部分丢失"，不能并进上面那句，
   // 也不能不说——读者问"这条观察完整吗"时，答案就藏在这里。
@@ -641,9 +717,9 @@ export function explainFact(record) {
     // 缺的通道必须说出来。"进了描述版"不等于"标签版也有"，
     // 而读者常常只看一眼"有没有进"，就把两个通道当成一件事。
     const missing = Array.isArray(record.missing_channels) ? record.missing_channels : []
-    const labelOf = { tags: '标签版', description: '默认描述版', candidate: '候选描述版' }
     const missed = missing.map((item) => labelOf[item] ?? item)
-    if (missed.length > 0 && missed.length < 3) {
+    // 走到这里说明至少进了一个通道，所以缺的必然不是全部——不用再判长度。
+    if (missed.length > 0) {
       // 缺的理由如果是"我们按规则挡的"，要说出来——否则读者会当成事故去修。
       const notes = record.channel_notes ?? {}
       const why = missing.map((item) => notes[item]).filter((note) => typeof note === 'string' && note !== '')

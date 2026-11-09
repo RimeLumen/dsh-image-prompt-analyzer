@@ -11,6 +11,26 @@ import {
   traceStage,
 } from './stages.js'
 
+/**
+ * `layout` 参数的归一化。
+ *
+ * 三种写法都接受：`true`（用默认格式）、`false`/缺省（不要）、或一个对象。
+ * 对象只认白名单五个键——多出来的键不往编译层传，免得它变成一条隐形的第二套配置。
+ */
+function normalizeLayoutArg(layout) {
+  if (layout === true) {
+    return { coord_space: 'abs', bbox_format: 'xyxy', canvas_width: null, canvas_height: null, max_elements: null }
+  }
+  if (!layout || typeof layout !== 'object') return null
+  return {
+    coord_space: layout.coord_space ?? 'abs',
+    bbox_format: layout.bbox_format ?? 'xyxy',
+    canvas_width: layout.canvas_width ?? null,
+    canvas_height: layout.canvas_height ?? null,
+    max_elements: layout.max_elements ?? null,
+  }
+}
+
 export async function runAnalyzePipeline(runtime, args = {}) {
   const taskId = newTaskId()
   const diagnostics = []
@@ -74,6 +94,9 @@ export async function runAnalyzePipeline(runtime, args = {}) {
       // 不传的话，"阶段 B 说过这里没有剑、我们没采纳"与"阶段 B 什么都没说"
       // 在事实台账里长得一模一样。
       localAbsences: (analysis.stats?.reviews ?? []).flatMap((review) => review?.crop_local ?? []),
+      // 可选 JSON Layout：只有 caption 档案 + 用户明确要才生效。
+      // 传 true 或对象都行；对象可带 coord_space / bbox_format / canvas_width / canvas_height / max_elements。
+      layout: normalizeLayoutArg(args.layout),
       diagnostics,
     })
 

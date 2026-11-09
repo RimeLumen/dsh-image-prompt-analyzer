@@ -20,6 +20,11 @@ import {
 } from './describe.js'
 import { buildControlAdvice, controlDiagnostics, delegatePoseTerms, normalizeControlMode } from './control.js'
 import { MOSS_CODES, MOSS_NEGATIVE_BASE, MOSS_REGISTER, buildMossNegative, composeMossCaption, verifyCaptionGrounding } from './moss.js'
+import {
+  MOSS_LAYOUT_SCHEMA_VERSION,
+  buildMossLayout,
+  validateMossLayout,
+} from './moss-layout.js'
 import { termRef, buildFactLedger } from '../trace/ledger.js'
 
 /**
@@ -74,10 +79,22 @@ export {
   MOSS_NEGATIVE_BASE,
   MOSS_REGISTER,
   MOSS_SCHEMA_VERSION,
+  MOSS_CAPTION_LANGUAGES,
   buildMossNegative,
   composeMossCaption,
   verifyCaptionGrounding,
 } from './moss.js'
+export {
+  MOSS_LAYOUT_SCHEMA_VERSION,
+  MOSS_LAYOUT_CODES,
+  MOSS_BBOX_COORD_SPACES,
+  MOSS_BBOX_FORMATS,
+  buildMossLayout,
+  validateMossLayout,
+  serializeMossLayout,
+  toPixelBox,
+  toModelBox,
+} from './moss-layout.js'
 export {
   auditFidelity,
   FIDELITY_CODES,
@@ -130,6 +147,10 @@ export async function compilePrompt({
   // 它们不进提示词，但要进台账：不然"阶段 B 说过这里没有剑、我们没采纳"
   // 和"阶段 B 什么都没说"在记录里一模一样。
   localAbsences = [],
+  // 可选 JSON Layout（只有 caption 档案用得上）。null / false = 不要。
+  // 传对象时读 coord_space / bbox_format / canvas_width / canvas_height / max_elements。
+  // Layout 是同一份 IR 的另一种排布，不是第二个档案，也不是第二次视觉分析。
+  layout = null,
 } = {}) {
   const diagnostics = []
 
@@ -328,37 +349,51 @@ export async function compilePrompt({
   // 标签版求"模型认得"，描述版求"说得清楚"，两者的收录标准不一样。
   const descriptionTerms = positiveTerms.filter((term) => term?.description || term?.excluded_from_tags === true)
 
+  // IR 事实这一层三种写法都要用：候选描述版拿它当唯一输入，caption 档案拿它写完整
+  // 描述，台账拿它对齐来源。所以它无条件计算。
+  const described = collectDescriptionFacts(ir)
+  for (const item of described.diagnostics) diagnostics.push(item)
+
   // 冻结基线：描述版仍按原来的 leftovers 通道生成，输出与改动前逐字一致。
   // 下面另起一条从 IR 事实直接取内容的候选通道，两者并存，默认不被替换。
-  const composed = composeFromIR({
-    ir,
-    profile,
-    terms: positiveTerms,
-    slots: budgeted.slots,
-    segments: rendered.segments,
-    extras: descriptionTerms,
-  })
+  //
+  // caption 档案两条都不要：它自己从 IR 事实按语义顺序写完整描述，成分句算完就被
+  // 丢掉。这里直接不算——省掉一次全量分句，trace 里也不再留一份没人读的文本。
+  const composed = captionMode
+    ? null
+    : composeFromIR({
+        ir,
+        profile,
+        terms: positiveTerms,
+        slots: budgeted.slots,
+        segments: rendered.segments,
+        extras: descriptionTerms,
+      })
 
   // 候选描述版：输入换成 IR 事实（features / entities / relations），取舍依据是
   // 观察本身的不确定性、重复、矛盾与表达预算，**不看词库命中**。
   // 这里刻意不传 slots / segments：它们是标签版的产物，一进来候选版就会跟着词库状态漂。
   // 传空之后候选版只有一条输入源——IR 事实，于是同一份 IR 在完整词库、缺条目词库、
   // 空库、无词库四种情况下拿到的是同一份文本。
-  const described = collectDescriptionFacts(ir)
-  for (const item of described.diagnostics) diagnostics.push(item)
-  const descriptionCandidate = composeFromIR({
-    ir,
-    profile,
-    terms: [],
-    slots: [],
-    segments: [],
-    extras: described.facts,
-  })
-  const candidateClauses = attachSourceRefs(descriptionCandidate.clauses, described.facts)
-  const candidateGrounding = verifyDescriptionGrounding({ text: descriptionCandidate.text, facts: described.facts })
-  const baselineClauses = attachSourceRefs(composed.clauses, described.facts)
+  const descriptionCandidate = captionMode
+    ? null
+    : composeFromIR({
+        ir,
+        profile,
+        terms: [],
+        slots: [],
+        segments: [],
+        extras: described.facts,
+      })
+  const candidateClauses = descriptionCandidate
+    ? attachSourceRefs(descriptionCandidate.clauses, described.facts)
+    : []
+  const candidateGrounding = descriptionCandidate
+    ? verifyDescriptionGrounding({ text: descriptionCandidate.text, facts: described.facts })
+    : { ok: true, basis: 'ir_facts', unsupported: [], checked_words: 0 }
+  const baselineClauses = composed ? attachSourceRefs(composed.clauses, described.facts) : []
 
-  if (!composed.grounding.ok) {
+  if (composed && !composed.grounding.ok) {
     diagnostics.push(
       diagnostic({
         error_code: COMPOSE_CODES.UNGROUNDED_PROSE,
@@ -405,35 +440,82 @@ export async function compilePrompt({
   //   标签版（positive）只放词表认得的标签——句子混进去会摊薄真标签的权重；
   //   描述版（description）用完整句子，专收动作、介质、关系这类标签表达不了的东西。
   // 以前 hybrid 档案把两者揉成一段，代价是标签被稀释、句子也读不全，已废弃。
-  const prosePositive = wordStyle === 'prose' && composed.text.length > 0
+  const proseText = composed ? composed.text : ''
+  const prosePositive = wordStyle === 'prose' && proseText.length > 0
   const captionPositive = captionMode && (caption?.text.length ?? 0) > 0
-  const descriptionText = composed.text
-  // 标签档的正稿永远是纯标签：句子只会把标签权重摊薄，而句子能表达的东西
-  // 描述版已经写了。两版并列返回，用哪版由人决定。
-  const positive = captionPositive ? caption.text : prosePositive ? descriptionText : rendered.positive
-  const register = captionPositive ? 'caption' : prosePositive ? 'clause' : 'tag'
+  const descriptionText = proseText
+  // Caption 档案编不出 Caption 就是失败，不是"退回标签版"。
+  // 退回标签等于偷偷换了一个模型写法：用户点的是 MOSS，拿到的却是 Illustrious 的词串，
+  // 而提示词本身看不出被换过。宁可交一个空的、带 ERROR 的结果，也不交一个像样的错东西。
+  const captionFailed = captionMode && !captionPositive
+  const positive = captionMode
+    ? captionPositive
+      ? caption.text
+      : ''
+    : prosePositive
+      ? descriptionText
+      : rendered.positive
+  const register = captionMode ? 'caption' : prosePositive ? 'clause' : 'tag'
+
+  // 可选 JSON Layout：只有 caption 档案、只有用户明确要、只有 Caption 本身成功时才编。
+  // 失败的 Layout 不替换正稿——Caption 已经是能用的东西，不该被一个可选的附属格式拖坏。
+  const layoutRequested = captionPositive && layout !== null && layout !== undefined && layout !== false
+  const layoutResult = layoutRequested
+    ? buildMossLayout({
+        ir,
+        profile,
+        caption: caption.text,
+        canvasWidth: Number.isInteger(layout?.canvas_width) ? layout.canvas_width : null,
+        canvasHeight: Number.isInteger(layout?.canvas_height) ? layout.canvas_height : null,
+        maxElements: Number.isInteger(layout?.max_elements) ? layout.max_elements : undefined,
+        coordSpace: typeof layout?.coord_space === 'string' ? layout.coord_space : 'abs',
+        bboxFormat: typeof layout?.bbox_format === 'string' ? layout.bbox_format : 'xyxy',
+      })
+    : null
+  if (layoutResult) diagnostics.push(...layoutResult.diagnostics)
+  const layoutPositive = layoutResult?.ok === true && layoutResult.text.length > 0
 
   const result = {
     schema_version: COMPILE_SCHEMA_VERSION,
     target_profile: profile?.config_id ?? null,
     detail_level: detailLevel ?? preset?.config_id ?? null,
     prompts: {
-      positive,
+      // 明确要了 Layout 且 Layout 编出来了，正稿就是那串 JSON；否则仍是 Caption。
+      positive: layoutPositive ? layoutResult.text : positive,
       // caption 档案的「描述」就是这段 Caption 本身：它已经是完整描述，
       // 再放一份成分句只会让下游分不清哪一份才是正稿。
-      description: captionPositive ? caption.text : descriptionText,
+      description: captionMode ? (captionPositive ? caption.text : '') : descriptionText,
       negative: negativePrompt,
     },
     register,
+    // Layout 的完整产出。null = 这次没要，不是"要了但失败"——后者 ok:false 且有诊断。
+    layout: layoutResult
+      ? {
+          schema_version: MOSS_LAYOUT_SCHEMA_VERSION,
+          ok: layoutResult.ok,
+          coord_space: layoutResult.layout?.bbox_coord_space ?? null,
+          bbox_format: layoutResult.layout?.bbox_format ?? null,
+          json: layoutResult.layout,
+          text: layoutResult.text,
+          validation: layoutResult.layout ? validateMossLayout(layoutResult.layout) : null,
+          stats: layoutResult.stats,
+        }
+      : null,
     // Caption 的完整产出（含依据引用、丢弃事实、语法校验）。标签版仍在 slots 里可回查。
     caption: caption
       ? {
           schema_version: caption.schema_version,
+          ok: caption.ok,
+          language: caption.language,
           text: caption.text,
           clauses: caption.clauses,
           grounding: caption.grounding,
           facts_used: caption.facts_used,
           facts_dropped: caption.facts_dropped,
+          // Caption 一句都写不出来时，最该回答的是"观察都去哪了"。
+          // `facts_dropped` 只记"进了池子但没排上"的；被否定式、占位符、
+          // 非英文、量测规则挡在池子外面的那些，只有这份计数说得清。
+          observation_stats: described.stats,
           stats: caption.stats,
           negative: caption.negative
             ? { text: caption.negative.text, terms: caption.negative.terms, stats: caption.negative.stats }
@@ -447,15 +529,17 @@ export async function compilePrompt({
     composed,
     // 描述版的另一条通路：直接取 IR 事实，与词库命中无关。
     // 它是候选，不替换 prompts.description —— 冻结基线的输出保持逐字不变。
-    description_candidate: {
-      schema_version: DESCRIBE_SCHEMA_VERSION,
-      text: descriptionCandidate.text,
-      clauses: candidateClauses,
-      grounding: candidateGrounding,
-      facts: described.facts,
-      dropped_facts: described.dropped_facts,
-      stats: described.stats,
-    },
+    description_candidate: descriptionCandidate
+      ? {
+          schema_version: DESCRIBE_SCHEMA_VERSION,
+          text: descriptionCandidate.text,
+          clauses: candidateClauses,
+          grounding: candidateGrounding,
+          facts: described.facts,
+          dropped_facts: described.dropped_facts,
+          stats: described.stats,
+        }
+      : null,
     // 基线描述版每句话来自哪些 IR 事实（只记支持关系，不判对错）。
     description_source_refs: baselineClauses.map((clause) => ({
       role: clause.role,
@@ -473,8 +557,8 @@ export async function compilePrompt({
       slots: rendered.segments.length,
       truncated: budgeted.truncated,
       relation_compounds: compounds.terms.length,
-      composed_clauses: composed.clauses.length,
-      composed_ungrounded: composed.grounding.ungrounded.length,
+      composed_clauses: composed ? composed.clauses.length : 0,
+      composed_ungrounded: composed ? composed.grounding.ungrounded.length : 0,
       vocabulary_excluded: vocabularyExcluded,
       pose_delegated: delegated.removed.length,
       description_chars: descriptionText.length,
@@ -482,17 +566,23 @@ export async function compilePrompt({
       tag_sources: resolved.stats?.tag_sources ?? null,
       lossy_projections: resolved.stats?.lossy_projections ?? 0,
       unmapped: resolved.stats?.unmapped ?? 0,
-      description_candidate_chars: descriptionCandidate.text.length,
+      description_candidate_chars: descriptionCandidate ? descriptionCandidate.text.length : null,
       description_candidate_facts: described.facts.length,
       description_candidate_unsupported: candidateGrounding.unsupported.length,
       // Caption 通道的规模与依据缺口。没有 caption 档案时是 null，不是 0——
       // 0 会被读成"编了但一个字都没写出来"。
       caption_chars: caption ? caption.text.length : null,
+      caption_ok: captionMode ? !captionFailed : null,
       caption_sentences: caption ? caption.stats.sentences : null,
       caption_facts_used: caption ? caption.stats.used : null,
       caption_facts_dropped: caption ? caption.stats.dropped : null,
       caption_unsupported: caption ? caption.grounding.unsupported.length : null,
       caption_negative_terms: caption?.negative ? caption.negative.stats.terms : null,
+      // Layout 同理：没要就是 null。要了但失败有 ok:false，不能和"没要"混成同一个值。
+      layout_items: layoutResult?.layout ? layoutResult.stats.items : null,
+      layout_objects: layoutResult?.layout ? layoutResult.stats.objects : null,
+      layout_texts: layoutResult?.layout ? layoutResult.stats.texts : null,
+      layout_skipped: layoutResult ? layoutResult.stats.skipped : null,
     },
   }
   // 事实台账：每条观察从 IR 一路走到哪个通道。join 全按身份（category + key + entity_id），

@@ -284,9 +284,10 @@ function runLedger(ctx, args) {
   log('=== fidelity（词面保留指标）===')
   log(`status：${fidelity.status} | score：${fidelity.score ?? 'null'} | 口径：${fidelity.score_scope ?? '?'}`)
   log(`判据：score=${fidelity.lost_basis ?? '?'} | channels=${fidelity.channel_basis ?? '?'}（两套数不可互相换算）`)
-  for (const key of [CHANNELS.TAGS, CHANNELS.DESCRIPTION, CHANNELS.CANDIDATE]) {
-    const channel = fidelity.channels?.[key]
-    if (!channel) continue
+  // 通道按这次编译实际产出的那些打印，不按写死的三通道列表：
+  // Caption 档只有一个成品，硬列三个会让它看起来"缺了两路"。
+  for (const channel of Object.values(fidelity.channels ?? {})) {
+    const key = channel.channel ?? '?'
     const score = channel.score === null || channel.score === undefined ? 'null' : channel.score
     log(`  ${key.padEnd(12)} ${channel.kept}/${channel.checked} = ${score}  [${channel.status}] 判据 ${channel.basis}${channel.unmatched > 0 ? ` 未对上 ${channel.unmatched}` : ''}`)
   }
@@ -359,20 +360,27 @@ function runChannels(ctx) {
 
   log(`=== 总览 === 台账 ${records.length} 条`)
   const fidelity = ctx.compiled?.fidelity
+  const measuredChannels = new Set(Object.keys(fidelity?.channels ?? {}))
   if (fidelity?.channels) {
-    for (const key of [CHANNELS.TAGS, CHANNELS.DESCRIPTION, CHANNELS.CANDIDATE]) {
-      const channel = fidelity.channels[key]
-      if (channel) log(`  ${key.padEnd(12)} ${channel.kept}/${channel.checked}  [${channel.status}] 判据 ${channel.basis}`)
+    for (const channel of Object.values(fidelity.channels)) {
+      log(`  ${String(channel.channel ?? '?').padEnd(12)} ${channel.kept}/${channel.checked}  [${channel.status}] 判据 ${channel.basis}`)
     }
   }
 
   // 差额必须按「为什么」分组，而不是只报条数：
   // 同样少 11 条，"按规则挡的"和"意外丢的"要修的地方完全不同。
+  //
+  // 只算这次编译真的产出过的通道：Caption 档只有一个成品，拿它去跟不存在的
+  // 标签版比差额，只会报出三个"0 条"的假结论。
   const gaps = [
     { title: '描述版有、标签版没有', have: CHANNELS.DESCRIPTION, lack: CHANNELS.TAGS },
     { title: '标签版有、候选描述版没有', have: CHANNELS.TAGS, lack: CHANNELS.CANDIDATE },
     { title: '描述版有、候选描述版没有', have: CHANNELS.DESCRIPTION, lack: CHANNELS.CANDIDATE },
-  ]
+  ].filter((gap) => measuredChannels.has(gap.have) && measuredChannels.has(gap.lack))
+  if (gaps.length === 0 && measuredChannels.size > 0) {
+    log('')
+    log(`=== 通道差额 === 这个档案只有一个成品（${[...measuredChannels].join('、')}），没有可比的第二路。`)
+  }
   for (const gap of gaps) {
     const list = records.filter((record) => inSet(record, gap.have) && !inSet(record, gap.lack))
     log('')

@@ -231,6 +231,10 @@ export function traceStage({
       description_candidate: compiled.description_candidate ?? null,
       description_source_refs: compiled.description_source_refs ?? null,
       composed: compiled.composed ?? null,
+      // Caption 与 Layout 都是"编译产物"，不回填到 trace 里就只剩一个成品字符串，
+      // 事后无法回答"这句为什么这么写"和"这块坐标从哪来"。
+      caption: compiled.caption ?? null,
+      layout: compiled.layout ?? null,
       slots: compiled.slots ?? null,
       quality_block: compiled.quality_block ?? null,
       keywords: compiled.keywords ?? null,
@@ -304,7 +308,7 @@ function pruneTraces(rootDir, maxTasks) {
   }
 }
 
-export async function compileStage({ runtime, ir, irBeforeEvidence = null, profile, preset, kb, includeNegative, character = null, poseControl = null, localAbsences = [], diagnostics }) {
+export async function compileStage({ runtime, ir, irBeforeEvidence = null, profile, preset, kb, includeNegative, character = null, poseControl = null, localAbsences = [], layout = null, diagnostics }) {
   const compiled = await compilePrompt({
     ir,
     irBeforeEvidence,
@@ -314,6 +318,8 @@ export async function compileStage({ runtime, ir, irBeforeEvidence = null, profi
     includeNegative,
     character,
     poseControl,
+    // 可选 JSON Layout 的请求参数。只有 caption 档案会真的用它。
+    layout,
     // 局部复核的缺席断言跟着进编译：它们不进提示词，只进台账。
     localAbsences,
   })
@@ -438,6 +444,12 @@ export function buildAnalysisEnvelope({
           positive: compiled.prompts?.positive ?? '',
           negative: compiled.prompts?.negative ?? '',
         },
+        // 只有 caption 档案才有「排布格式」这一说：同一份 Caption 既可以整段喂，
+        // 也可以排成 JSON Layout。它不是 prompt_style——写法仍是 Caption，
+        // 变的只是这串 Caption 有没有被排成结构化元素。
+        ...(compiled.register === 'caption'
+          ? { prompt_format: compiled.layout?.ok === true ? 'layout_json' : 'caption' }
+          : {}),
         // 只有真的交给控制网时才出现：那时权重与区间建议是必须带出去的参数。
         ...(compiled.pose_control && compiled.pose_control.mode && compiled.pose_control.mode !== 'none'
           ? { pose_control: compiled.pose_control }

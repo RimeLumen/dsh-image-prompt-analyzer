@@ -590,7 +590,8 @@ export function createComfyToolSpecs(runtime) {
       name: 'comfyui_inspect_workflow',
       description:
         '读取并检查一份工作流：识别是 UI Workflow 还是 API Prompt，列出节点、输入、连接与不支持项。' +
-        'UI 格式只做只读检查，首版不转换成 API 格式；正负提示词按 KSampler 的连接判定，不按节点顺序猜。',
+        'UI 格式只做只读检查，首版不转换成 API 格式；正负提示词按 KSampler 的连接判定，不按节点顺序猜。' +
+        '同时检查提示词链路上有没有 Prompt Enhancer 一类的改写节点（只看结构，不改工作流）。',
       parameters: {
         type: 'object',
         properties: {
@@ -608,7 +609,33 @@ export function createComfyToolSpecs(runtime) {
         const report = inspectWorkflow(workflow)
         if (report.format !== 'api') return report
         const { analyzeBindings } = await import('./bindings.js')
-        return { ...report, bindings: analyzeBindings(workflow) }
+        const { detectPromptEnhancers, mossTemplateSupport } = await import('./enhancer.js')
+        const bindings = analyzeBindings(workflow)
+        const enhancer = detectPromptEnhancers(workflow)
+        // 版本只影响"官方模板能不能跑"，读不到就是 unknown，不影响工作流本身的检查。
+        //
+        // 这个探测必须封顶：检查一份本地工作流原本是纯本地操作，不该因为 ComfyUI
+        // 关着就挂住几十秒。读不到版本和读不到服务是同一件事，都算 unknown。
+        let templateSupport = mossTemplateSupport(null)
+        try {
+          // 两个都可能是 undefined（老 Node 没有 AbortSignal.timeout / any），
+          // 缺哪个就少一层保护，不要为了凑组合抛 TypeError。
+          const probe = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(2500) : null
+          const signal =
+            probe && args.signal && typeof AbortSignal.any === 'function'
+              ? AbortSignal.any([args.signal, probe])
+              : (probe ?? args.signal ?? null)
+          const status = await comfy.status({ signal })
+          templateSupport = mossTemplateSupport(status?.system ?? null)
+        } catch {
+          templateSupport = mossTemplateSupport(null)
+        }
+        return {
+          ...report,
+          bindings,
+          prompt_enhancer: { ...enhancer, comfyui: templateSupport },
+          diagnostics: [...report.diagnostics, ...bindings.diagnostics, ...enhancer.diagnostics],
+        }
       }),
     },
 

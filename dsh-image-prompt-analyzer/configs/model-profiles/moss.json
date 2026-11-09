@@ -13,6 +13,7 @@
   "tag_standard": {
     "family": "moss",
     "word_style": "caption",
+    "caption_language": "en",
     "slot_order": [
       "count",
       "character",

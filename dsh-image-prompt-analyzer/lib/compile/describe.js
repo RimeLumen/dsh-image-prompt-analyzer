@@ -325,12 +325,25 @@ export function collectDescriptionFacts(ir, { maxFacts = 160, maxChars = 4000 } 
     if (!relation || typeof relation !== 'object') continue
     const description = typeof relation.description === 'string' ? relation.description.trim() : ''
     if (!description) continue
+    // IR 里关系的主键叫 `relation_id`。写成 `relation.id` 会让每条关系观察的
+    // source_refs 都丢掉身份，台账只能把它记成 `relation:null`——而 IR 那边记的是
+    // `relation:rel_1`，两边永远对不上，关系就成了"没有依据"的孤儿。
+    const relationId = relation.relation_id ?? relation.id ?? null
+    // 关系提到的那两个实体也算"依据"：`right hand holds the umbrella handle`
+    // 这句话之所以能说，是因为画里真有一个 umbrella。只挂 relation ref 的话，
+    // 那个道具实体在台账上会显示成"没被写进任何成品"，而它明明被写进去了。
+    const refs = [{ kind: 'relation', relation_id: relationId, relation_type: relation.type ?? null }]
+    for (const entityId of [relation.from, relation.to]) {
+      if (typeof entityId === 'string' && entityId !== '') {
+        refs.push({ kind: 'entity_label', entity_id: entityId, entity_kind: null })
+      }
+    }
     push(description, {
       category: relation.category ?? 'pose_action',
       status: relation.status,
       confidence: relation.confidence,
-      relation_id: relation.id ?? null,
-      source_refs: [{ kind: 'relation', relation_id: relation.id ?? null, relation_type: relation.type ?? null }],
+      relation_id: relationId,
+      source_refs: refs,
     })
   }
 

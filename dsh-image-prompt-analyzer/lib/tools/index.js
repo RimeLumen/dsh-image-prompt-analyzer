@@ -34,6 +34,7 @@ function analyzeImagePrompt(runtime) {
       '把一张图片逆向成提示词，按所选目标档案的写法给出一条正向提示词与一条反向提示词。' +
       '正向只给一种形态，由档案决定：标签档（word_style=spaced）给标签流，描述档（prose）给成分句，Caption 档（caption，MOSS-Image）给一段连贯的自然语言描述，不并列几版让你挑。' +
       '返回只有正向、反向、目标档案、写法（prompt_style: tag / prose / caption）、图片尺寸，以及控制网模式下必须带走的权重与区间建议。' +
+      'Caption 档在明确要求时还会多一个 prompt_format（caption / layout_json）——它说的是这串描述有没有排成结构化元素，不是另一种写法。' +
       '槽位明细、成分句、事实台账、还原审计、覆盖率、统计这些是分析过程，写到本地 trace（data/traces/<task_id>/），不占对话；' +
       '要逐条追查某条观察去了哪里，用 scripts/inspect-prompt.mjs 读 trace 里的 IR。' +
       '诊断只回 warning 与 error，INFO 级说明留在 trace 里。' +
@@ -69,6 +70,28 @@ function analyzeImagePrompt(runtime) {
         include_ir: {
           type: 'boolean',
           description: '调试用：把完整 IR 一并返回。默认 false，出图与反推都不需要它——分析过程数据在本地 trace 里。',
+        },
+        layout: {
+          description:
+            '仅 Caption 档（moss）有意义：把 Caption 排成 MOSS 的 Layout JSON。默认不排。' +
+            '传 true 用默认格式（abs / xyxy，画布取原图尺寸）；也可以传对象指定 coord_space（abs / abs_centralized）、' +
+            'bbox_format（xyxy / yxyx）、canvas_width、canvas_height、max_elements。' +
+            '坐标只来自 IR 里视觉模型给出的区域，没有区域的元素不进 Layout——插件不会编造 Bounding Box。' +
+            '非 caption 档案传了会被忽略。',
+          anyOf: [
+            { type: 'boolean' },
+            {
+              type: 'object',
+              properties: {
+                coord_space: { type: 'string', enum: ['abs', 'abs_centralized'] },
+                bbox_format: { type: 'string', enum: ['xyxy', 'yxyx'] },
+                canvas_width: { type: 'integer', minimum: 1 },
+                canvas_height: { type: 'integer', minimum: 1 },
+                max_elements: { type: 'integer', minimum: 1, maximum: 64 },
+              },
+              additionalProperties: false,
+            },
+          ],
         },
         save_experience: { type: 'boolean', description: '是否把本次结果保存进本地经验库。默认 false（需配置允许）。' },
       },

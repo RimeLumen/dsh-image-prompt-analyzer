@@ -44,6 +44,9 @@ export const CHANNEL_KEYS = Object.freeze({
   TAGS: 'tags',
   DESCRIPTION: 'description',
   CANDIDATE: 'candidate',
+  // Caption 档只有一个成品：那段描述既是正稿也是描述版。它跟上面三个互斥——
+  // 不是并列的第四路，而是换了一套通道定义。
+  CAPTION: 'caption',
 })
 
 export const CHANNEL_STATUS = Object.freeze({
@@ -437,11 +440,19 @@ export function auditFidelity({ ir, compiled, ledger = null } = {}) {
   // 差的 26 条里，一部分是长句被规则分流到描述版（词面看不出来它进没进），
   // 一部分是同一句话在成品里换了个说法（词面判"没进"，实际进了）。用词面数
   // 去读"标签版丢了 26 条"是错的，反过来用身份数去读"标签版全都有"也是错的。
-  const channelText = {
-    [CHANNEL_KEYS.TAGS]: positive,
-    [CHANNEL_KEYS.DESCRIPTION]: String(compiled?.prompts?.description ?? '') || sentence,
-    [CHANNEL_KEYS.CANDIDATE]: String(compiled?.description_candidate?.text ?? ''),
-  }
+  // Caption 档只有一个成品。硬套三通道会得出两个假结论：`candidate` 永远是
+  // 「没测出来」（它本来就不该产出），而每条记录都变成「只进了部分通道、缺
+  // tags/description/candidate」——那三个通道在 Caption 档里根本不存在。
+  // 所以这里换一套通道定义，不是把同一个数字改个说法。
+  const captionMode = String(compiled?.register ?? '') === 'caption'
+  const channelText = captionMode
+    ? { [CHANNEL_KEYS.CAPTION]: positive }
+    : {
+        [CHANNEL_KEYS.TAGS]: positive,
+        [CHANNEL_KEYS.DESCRIPTION]: String(compiled?.prompts?.description ?? '') || sentence,
+        [CHANNEL_KEYS.CANDIDATE]: String(compiled?.description_candidate?.text ?? ''),
+      }
+  const channelTotal = Object.keys(channelText).length
   // 没测出来时也要说清"本来打算用哪套判据"，否则 no_data 的 basis 默认写 word_surface，
   // 会被读成"这条通道是用词面比过的"。
   const basisOf = () => (identityBasis ? 'ledger_identity' : 'word_surface')
@@ -545,7 +556,9 @@ export function auditFidelity({ ir, compiled, ledger = null } = {}) {
   // "全部保留"：只看标签版的人会以为这条观察不存在。所以既要单独列出来，
   // 又不能混进丢弃计数里。
   const channelGaps = important
-    .filter((record) => Array.isArray(record?.channels) && record.channels.length > 0 && record.channels.length < 3)
+    // 上限跟着通道数走，不写死 3：Caption 档只有一个通道，写死会把每一条都
+    // 算成「只进了部分通道」。
+    .filter((record) => Array.isArray(record?.channels) && record.channels.length > 0 && record.channels.length < channelTotal)
     .map((record) => ({
       fact_id: record.fact_id,
       // 带上原话与重要度：只给 fact_id 的话，读者还得回头查台账才知道少的是哪条观察。
@@ -630,7 +643,9 @@ export function auditFidelity({ ir, compiled, ledger = null } = {}) {
     }
     return {
       allowed: true,
-      reason: `三个通道都测过，${important.length} 条高重要度事实在台账里都有去向且没有丢弃或改写${gapNote ? `；${gapNote}` : ''}。`,
+      // 通道数按实际数报，不写死「三个」：Caption 档只有一个成品，
+      // 说成三个通道都测过等于在报告一个不存在的检查。
+      reason: `${captionMode ? '这个档案只有一个成品' : '三个通道都测过'}，${important.length} 条高重要度事实在台账里都有去向且没有丢弃或改写${gapNote ? `；${gapNote}` : ''}。`,
     }
   })()
 

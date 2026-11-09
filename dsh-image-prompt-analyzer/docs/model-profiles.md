@@ -14,6 +14,10 @@
 `prompt_style` 只有这三个值，工具返回里也只有这三个值。三档各自独立编译，
 互不翻译对方的成品。
 
+MOSS 还有一层可选的 JSON Layout 输出，它不是第四种 Profile，也不是第四个
+`prompt_style` 值——它是在 `caption` 之上多排一层结构化元素，用结果信封里的
+`prompt_format` 区分（`caption` / `layout_json`）。详见下面的「JSON Layout」。
+
 ## 三档的差别
 
 - **`tag`（Illustrious）**：逗号分隔的 Danbooru 标签，带权重语法 `(cowboy shot:1.1)`。
@@ -51,9 +55,15 @@ CLIP 强的能力扔掉。
 - `verifyCaptionGrounding()` 逐词核对：不在任何 IR 事实里、也不属于语法骨架词
   （`CAPTION_SCAFFOLDING`）的词会被列进 `unsupported`，并产生
   `COMPILE_MOSS_CAPTION_UNGROUNDED` 诊断（INFO 级，留在 trace 里）。
+- 词形差异不算「没依据」：大小写、单复数（`blouse` / `blouses`）、连字符与下划线
+  （`silver-haired` 拆成两个词分别核对）、所有格（`girl's` 的 `s` 会被长度过滤掉）
+  都按同一个词处理。核对时给每个词几个候选形态，任何一条命中事实就放行。
+- 不做词干还原。`holding` → `hold` 需要词典，猜错的方向是把「没写的」判成「写过」；
+  这里的错判必须保守，宁可多报一个待验证词，也不能放过幻觉。
 - 低置信度、被否定的观察在 `describe.js` 那层就已经被剔掉，Caption 拿不到它们。
 - 画面里的文字是**内容**不是观察，所以绕过英文过滤直接取原文：招牌上的中文
-  照抄中文，不翻译、不转小写。
+  照抄中文，不翻译、不转小写。它同时是一条事实，因此不会被 grounding 拦下；
+  但凭空写一句 IR 里没有的文字照样会被拦。
 
 ### 不重复
 
@@ -82,23 +92,114 @@ worst quality, bad anatomy, watermark, jpeg artifact
 
 ### 语言
 
-MOSS 官方推荐英文（训练数据更多），也支持中文。当前 Caption 固定输出英文：
-IR 里的观察值本身就是英文（视觉阶段被要求写成英文小写），画面里的文字则逐字保留
-原文。插件没有 prompt 语言配置项，本次也没有新增——真要中英切换，得先有语言配置，
-而不是给 MOSS 单独发明一个。
+MOSS 官方推荐英文（训练数据更多），也支持中文。**本插件目前只输出英文 Caption，
+中文支持未完成。**
+
+原因不是偷懒，是没有可靠数据来源：IR 里的观察值本身是英文（视觉阶段被要求写成
+英文小写），仓库里只有两份 Danbooru 标签表，没有任何中英对照资源。要出中文，
+要么再加一次翻译 LLM 调用，要么逐词替换——前者违反「不增加额外 LLM 调用」的
+约束，后者会产出一段半英文半中文的垃圾。
+
+所以 `caption_language` 是一个受支持的配置项（`configs/model-profiles/moss.json`
+里写 `"en"`），但清单里只有 `en`：档案校验会拒掉别的值
+（`TAG_STANDARD_CAPTION_LANGUAGE_UNSUPPORTED`），编译器也会在运行期硬失败
+（`COMPILE_MOSS_CAPTION_LANGUAGE_UNSUPPORTED`），不会偷偷降级成英文再假装成功。
+画面里的文字仍逐字保留原文，招牌上写中文就照抄中文。
+
+### 空 IR 是硬失败
+
+IR 里没有任何能写进 Caption 的事实时，MOSS 编译**失败**，不是退回标签流：
+
+- `register` 仍是 `caption`（不会偷偷变成 `tag`，也不会把目标档案换成 Illustrious）
+- `prompts.positive` 是空字符串
+- `caption.ok === false`，`stats.caption_ok === false`
+- 诊断里有一条 ERROR 级的 `COMPILE_MOSS_CAPTION_EMPTY`
+
+理由：Caption 档的契约就是「给一段描述」。给不出描述时退回标签流，调用方会以为
+拿到的是 MOSS 能吃的提示词，实际拿到的是另一个模型的写法——这种「看起来成功」
+的失败比直接报错危险得多。
+
+「一条都写不出来」有两种，都会失败，但原因不同，别混着看：
+
+- IR 是空的（没有实体、没有关系、没有观察）——`caption.observation_stats.scanned` 是 0。
+- 观察都在，但没有一条能进正向描述（`no umbrella` 这种否定式、`unknown` 这种占位符、
+  中文关系句、量测数字）——`observation_stats` 会分别给出 `negated` / `placeholder` /
+  `non_english` / `measurement` 的条数。这类失败下 `caption.facts_dropped` 是**空的**，
+  因为那些观察根本没进候选池，谈不上「排不上」。
+
+### 只算该算的
+
+Caption 档不再执行 `composeFromIR`。那一步是为 `prose` / `tag` 档准备成分句的，
+Caption 从 IR 事实直接成句，用不上它。跳过之后 `composed` 与
+`description_candidate` 都是 `null`，`stats.composed_clauses` 是 0，
+`stats.description_candidate_chars` 是 `null`。Anima 与 Illustrious 两条分支照旧，
+trace 台账也照旧读得到它们。
 
 ### JSON Layout
 
-MOSS 支持用 JSON 描述物体、文字与 Bounding Box。本插件**不输出 Layout**：
-反推任务的主要产出仍是正负向提示词，而 IR 里没有可靠的位置数据时编造坐标，
-比不给更糟。Layout 留作独立扩展。
+MOSS 支持用 JSON 描述物体、文字与 Bounding Box。本插件提供**可选的** Layout 输出，
+由 `lib/compile/moss-layout.js` 编译，默认关闭。
+
+Layout 不是第四种 Profile，也不是新的 `prompt_style`。它是在 `caption` 之上多排
+一层结构化数据：写法仍是 `caption`，结果信封里多一个 `prompt_format` 字段，
+值为 `caption` 或 `layout_json`。
+
+调用方式（`analyze_image_prompt` 的 `layout` 参数）：
+
+```json
+{ "layout": true }
+```
+
+```json
+{
+  "layout": {
+    "coord_space": "abs",
+    "bbox_format": "xyxy",
+    "canvas_width": 832,
+    "canvas_height": 1216,
+    "max_elements": 24
+  }
+}
+```
+
+规则：
+
+- **坐标来源只有一个：IR 里 entity / feature 的 `region`**（视觉阶段给出的归一化
+  `[x0,y0,x1,y1]`）。没有 `region` 的元素不进 Layout，也不会被补一个框。
+- 越界、零面积、反向的框一律拒收（`COMPILE_MOSS_LAYOUT_BOX_REJECTED`），
+  不裁剪、不夹紧——宁可少一个元素，也不给一个看起来合法的假框。
+- 一个可靠框都没有时整份失败（`COMPILE_MOSS_LAYOUT_EMPTY`），不给空 JSON。
+- 画布默认取原图尺寸；显式给 `canvas_width` / `canvas_height` 时以覆盖为准，
+  框跟着画布重新换算。
+- `coord_space` 支持 `abs`（左上原点）与 `abs_centralized`（画布中心原点，
+  x 右为正、y 下为正）；`bbox_format` 支持 `xyxy` 与 `yxyx`。两者可以叠加。
+- 画面文字逐字保留，换行不压平；文字没有 `region` 时只报一次
+  `COMPILE_MOSS_LAYOUT_TEXT_NO_REGION`，它留在 Caption 里，不进 Layout。
+- 元素按面积降序，超过 `max_elements`（默认 24）截断并报
+  `COMPILE_MOSS_LAYOUT_TRUNCATED`（INFO 级）。
+- Layout 失败不影响 Caption：正稿仍是那段话，只是 `prompt_format` 保持 `caption`。
+
+`validateMossLayout()` 会独立复核一遍顺序、面积、范围与轴序，结果放在
+`layout.validation` 里。
 
 ### Prompt Enhancer
 
 官方 ComfyUI 工作流带可选的 Prompt Enhancer，会把短提示词改写成完整 Caption。
-本插件已经直接输出完整 Caption，再开 Enhancer 等于让工作流改写一遍整理好的内容。
-要精确控制输出就把它关掉；插件不会去改用户的工作流，也不会额外调用远程 LLM
-二次扩写。
+本插件已经直接输出完整 Caption，再开 Enhancer 等于让工作流把整理好的内容再改写
+一遍——而且是不可追溯的改写。
+
+`comfyui_inspect_workflow` 现在会检查提示词链路上有没有这类节点，结果在
+`prompt_enhancer` 字段里：
+
+- 名字像改写节点的（`PromptEnhancer`、`OllamaGenerate`、`LLM`、`TextGenerate` …）
+- 结构上可疑的：直接接在采样器正/负向输入上的非文本节点（`inline_before_sampler`），
+  或文本编码节点上游还挂着别的节点（`upstream_of_text`）
+
+它**只报告，不改工作流，不重新分析图片**。要用逐词可追溯的 Caption / Layout，
+就在 ComfyUI 里把这个节点旁路掉。
+
+同一份检查还会报 MOSS 官方模板的版本门槛（`comfyui.t2i` / `comfyui.edit`，
+门槛分别是 0.42.0 与 0.43.0）。读不到 ComfyUI 版本时状态是 `unknown`，不猜。
 
 ## 同一份 IR 的三档输出
 
@@ -132,6 +233,57 @@ The image shows a girl with silver hair and red eyes, wearing a white blouse. Sh
 三者的差别不是「同一句话换了个说法」：标签档给词，prose 档给成分句，caption 档
 给一段能读的描述——关系（`hand holds the umbrella`）在 caption 里是一句话，
 在标签档里只能是两个相邻的词。
+
+结果信封里，`prompt_style` 三档分别是 `prose` / `tag` / `caption`；只有 `moss`
+还会多一个 `prompt_format`，值为 `caption` 或 `layout_json`。
+
+## Caption 与 Layout 的对比
+
+同一份 IR，开不开 `layout` 的区别：
+
+**默认（Caption）** — `prompt_format: "caption"`
+
+```
+The image shows a girl with silver hair, wearing a white blouse. She has a slight smile. The framing is a cowboy shot. The background is a rainy street.
+```
+
+**`layout: true`** — `prompt_format: "layout_json"`
+
+```json
+{
+  "schema_version": "1.0",
+  "summary": {
+    "meta": { "profile": "moss", "source": "image_ir", "elements": 3 },
+    "canvas": { "width": 832, "height": 1216 },
+    "caption": "The image shows a girl with silver hair."
+  },
+  "bbox_coord_space": "abs",
+  "bbox_format": "xyxy",
+  "items": [
+    {
+      "label": "1girl",
+      "caption": "1girl, silver hair, slight smile",
+      "bbox": [208, 122, 624, 1094]
+    },
+    {
+      "label": "umbrella",
+      "caption": "umbrella",
+      "bbox": [416, 61, 790, 426]
+    },
+    {
+      "label": "text",
+      "caption": "the text \"RAIN\nDAY\"",
+      "text": "RAIN\nDAY",
+      "bbox": [83, 24, 499, 146]
+    }
+  ]
+}
+```
+
+> **上面这份 Layout 用的是合成夹具坐标，不是真实图片的反推结果。**
+> 它的 region 是手写的（`1girl` 占 `[0.25,0.1,0.75,0.9]`，`umbrella` 占
+> `[0.5,0.05,0.95,0.35]`，画面文字占 `[0.1,0.02,0.6,0.12]`），
+> 对应测试里的 `syntheticLayoutIr()`。拿它当格式样例看，不要当成某张真图的坐标。
 
 ## 新增档案要改哪里
 

@@ -16,7 +16,19 @@ import { fileURLToPath } from 'node:url'
 
 import { registerAllTools } from '../lib/tools/index.js'
 import { compilePrompt } from '../lib/compile/index.js'
-import { MOSS_CODES, MOSS_NEGATIVE_BASE } from '../lib/compile/moss.js'
+import { explainFact } from '../lib/trace/ledger.js'
+import { MOSS_CODES, MOSS_NEGATIVE_BASE, composeMossCaption, verifyCaptionGrounding } from '../lib/compile/moss.js'
+import {
+  MOSS_BBOX_COORD_SPACES,
+  MOSS_BBOX_FORMATS,
+  MOSS_LAYOUT_CODES,
+  buildMossLayout,
+  serializeMossLayout,
+  toModelBox,
+  toPixelBox,
+  validateMossLayout,
+} from '../lib/compile/moss-layout.js'
+import { compareVersions, detectPromptEnhancers, mossTemplateSupport } from '../lib/comfyui/enhancer.js'
 import { createConfigStore, resolveProfileRequest } from '../lib/config/loader.js'
 // PLUGIN_CONFIG_CODES 没有从 plugin-config.js 导出，所以这里比对错误码字面量。
 // 字面量同时也是对外契约的一部分：诊断里的 error_code 就是这些字符串。
@@ -114,6 +126,7 @@ const CORE_TOOL_PROPERTIES = {
     'pose_control',
     'include_ir',
     'save_experience',
+    'layout',
   ],
   validate_configs: ['config_id', 'strict_mode'],
   diagnose_knowledge_base: ['source_id'],
@@ -157,7 +170,9 @@ const CORE_TOOL_SCHEMA_SHA256 = {
   // 旧名登记为别名）。属性名、枚举、required 仍未动。
   // 2026-11-09 再次有意更新：新增 moss 档案后，描述里补上 prompt_style 的第三个值
   // caption 与示例档案名 moss。属性名、枚举、required 依旧未动。
-  analyze_image_prompt: '16ada85c52eaf3f200d94fde768ddaf2378ac613208d8c91f53b65719d0288e1',
+  // 2026-11-09 第三阶段有意更新：analyze_image_prompt 增加 layout 参数（可选，
+  // 只对 caption 档生效），工具描述补上 prompt_format 的说明。
+  analyze_image_prompt: 'fd019719b80be488fb9f94cae8740dc4ef4fd4a7a56d12758340934e0b531781',
   validate_configs: 'c288b8347979e39b2eb3083e661c81f2e2555e3bfac948a13bc2834be17c2801',
   diagnose_knowledge_base: 'e366cbd5fddf761a42b34d27b790d867e8f2405b0523c92eeaae536427844682',
   rebuild_knowledge_base: '562b673a7a02ee57c03e7ac880d186e3f9ccb80ce3033ae560abac6ffecba6d3',
@@ -603,6 +618,7 @@ test('COMFY 错误码与规划文档 H4 的清单逐字一致', () => {
     'COMFY_SUBMISSION_UNKNOWN',
     'COMFY_EXECUTION_FAILED',
     'COMFY_OUTPUT_UNAVAILABLE',
+    'COMFY_PROMPT_ENHANCER_DETECTED',
   ]
   assert.deepEqual(Object.values(COMFY_CODES).sort(), [...expected].sort())
 
@@ -5261,22 +5277,47 @@ test('画面里的文字逐字保留原语言，不翻译也不改大小写', as
   }
 })
 
-test('IR 里没有可写的事实时，moss 退回标签版并说明原因', async () => {
+test('IR 里没有可写的事实时，moss 明确编译失败而不是退回标签版', async () => {
   const { moss, dataDir } = await loadMossProfile()
   try {
     const empty = { schema_version: '1.0', entities: [], relations: [], features: [], uncertainties: [] }
     const out = await compilePrompt({ ir: empty, profile: moss.config, kb: null })
 
+    // 关键：register 不能变回 tag。MOSS 档案永远只产 Caption，产不出来就是失败。
+    assert.equal(out.register, 'caption')
+    assert.equal(out.caption.ok, false)
     assert.equal(out.caption.text, '')
-    assert.equal(out.register, 'tag')
     assert.equal(out.prompts.positive, '')
-    assert.ok(out.diagnostics.some((item) => item.error_code === MOSS_CODES.CAPTION_EMPTY))
+    assert.equal(out.stats.caption_ok, false)
+
+    const failure = out.diagnostics.find((item) => item.error_code === MOSS_CODES.CAPTION_EMPTY)
+    assert.ok(failure, '缺少 CAPTION_EMPTY')
+    assert.equal(failure.severity, 'error')
+
+    // 失败也不该把负向一起丢掉：负向与正向成不成立无关。
+    assert.equal(out.prompts.negative, 'worst quality, bad anatomy, watermark, jpeg artifact')
   } finally {
     rmSync(dataDir, { recursive: true, force: true })
   }
 })
 
-test('caption 档的返回仍只多一个 prompt_style 值，结果结构不变', () => {
+test('caption 档在空 IR 上不会退回标签流，也不会改档案', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const empty = { schema_version: '1.0', entities: [], relations: [], features: [], uncertainties: [] }
+    const out = await compilePrompt({ ir: empty, profile: moss.config, kb: null })
+
+    assert.equal(out.target_profile, 'moss')
+    assert.equal(out.register, 'caption')
+    // 标签流的分隔符是 ", "，Caption 里不该出现；空结果更不该冒出一串标签。
+    assert.equal(out.prompts.positive.includes(', '), false)
+    assert.equal(out.slots.some((slot) => slot.terms.length > 0), false)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('caption 档的返回只多一个 prompt_format，写法仍是 caption', () => {
   const envelope = buildAnalysisEnvelope(
     envelopeInputs({
       compiled: {
@@ -5284,13 +5325,761 @@ test('caption 档的返回仍只多一个 prompt_style 值，结果结构不变'
         register: 'caption',
         prompts: { positive: 'The image shows a girl.', description: 'The image shows a girl.', negative: 'worst quality' },
         caption: { text: 'The image shows a girl.', stats: { sentences: 1 } },
+        layout: null,
       },
     }),
   )
-  assert.deepEqual(Object.keys(envelope.result).sort(), ['image', 'prompt_style', 'prompts', 'target_profile'])
+  assert.deepEqual(Object.keys(envelope.result).sort(), [
+    'image',
+    'prompt_format',
+    'prompt_style',
+    'prompts',
+    'target_profile',
+  ])
   assert.equal(envelope.result.prompt_style, 'caption')
+  assert.equal(envelope.result.prompt_format, 'caption')
   assert.equal(envelope.result.prompts.positive, 'The image shows a girl.')
   // Caption 明细（分句、依据、丢弃事实）是分析过程，留在 trace 里；对话里只有正负向。
   assert.equal(Object.hasOwn(envelope.result, 'caption'), false)
   assert.equal(JSON.stringify(envelope).includes('"stats"'), false)
+})
+
+test('Layout 排成功时 prompt_format 变 layout_json，prompt_style 仍是 caption', () => {
+  const envelope = buildAnalysisEnvelope(
+    envelopeInputs({
+      compiled: {
+        ...envelopeInputs().compiled,
+        register: 'caption',
+        prompts: { positive: '{"items":[]}', description: 'The image shows a girl.', negative: 'worst quality' },
+        caption: { text: 'The image shows a girl.', stats: { sentences: 1 } },
+        layout: { ok: true, text: '{"items":[]}', json: '{}', stats: {} },
+      },
+    }),
+  )
+  assert.equal(envelope.result.prompt_style, 'caption')
+  assert.equal(envelope.result.prompt_format, 'layout_json')
+  assert.equal(envelope.result.prompts.positive, '{"items":[]}')
+  assert.equal(Object.hasOwn(envelope.result, 'layout'), false)
+})
+
+test('非 caption 档案不会出现 prompt_format', () => {
+  for (const register of ['tag', 'clause']) {
+    const envelope = buildAnalysisEnvelope(
+      envelopeInputs({ compiled: { ...envelopeInputs().compiled, register } }),
+    )
+    assert.equal(Object.hasOwn(envelope.result, 'prompt_format'), false, `${register} 不该带 prompt_format`)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// MOSS 第二阶段：Caption 收尾、Grounding 约束、JSON Layout、Prompt Enhancer。
+//
+// 这一组全部走本地逻辑：不读图片、不调视觉模型、不提交 ComfyUI 任务。
+// Layout 用的坐标是合成 Fixture（见 syntheticLayoutIr 注释），不是真图。
+// ---------------------------------------------------------------------------
+
+/**
+ * 合成 IR：坐标是手写的测试夹具，不对应任何真实图片。
+ * 除 region 之外，其余字段照 IR schema 的形状给，好让编译器走真实路径。
+ */
+function syntheticLayoutIr() {
+  return {
+    schema_version: '1.0',
+    image: { width: 832, height: 1216, aspect_ratio: '13:19' },
+    entities: [
+      {
+        entity_id: 'e1',
+        kind: 'person',
+        label: '1girl',
+        confidence: 0.9,
+        importance: 0.9,
+        region: [0.25, 0.1, 0.75, 0.9],
+        features: [
+          { category: 'appearance', key: 'hair_color', value: 'silver hair', confidence: 0.9, importance: 0.8, status: 'confirmed' },
+          { category: 'expression', key: 'expression', value: 'slight smile', confidence: 0.8, importance: 0.6, status: 'confirmed' },
+        ],
+      },
+      {
+        entity_id: 'e2',
+        kind: 'object',
+        label: 'umbrella',
+        confidence: 0.85,
+        importance: 0.5,
+        region: [0.5, 0.05, 0.95, 0.35],
+        features: [],
+      },
+    ],
+    relations: [],
+    features: [
+      {
+        category: 'text',
+        key: 'text',
+        value: 'RAIN\nDAY',
+        confidence: 0.9,
+        importance: 0.7,
+        status: 'confirmed',
+        region: [0.1, 0.02, 0.6, 0.12],
+      },
+    ],
+    uncertainties: [],
+  }
+}
+
+test('grounding 放过大小写、单复数、连字符与所有格的差异', () => {
+  const facts = [
+    { text: 'silver hair', source_refs: [] },
+    { text: 'white blouse', source_refs: [] },
+    { text: 'rain-soaked street', source_refs: [] },
+    { text: 'girl', source_refs: [] },
+  ]
+  // 写出来的是复数、大写、去掉连字符 —— 词都来自事实，只是形态不同。
+  const result = verifyCaptionGrounding({
+    text: 'The image shows a Girl with Silver Hair, wearing white blouses on a rain soaked street.',
+    facts,
+  })
+  assert.equal(result.ok, true, `不该报未依据词：${result.unsupported.join(', ')}`)
+  assert.deepEqual(result.unsupported, [])
+})
+
+test('grounding 保留专有名词与画面文字，不因为不在词表里就丢掉', () => {
+  const facts = [
+    { text: 'girl', source_refs: [] },
+    { text: 'silver hair', source_refs: [] },
+    { text: 'Akihabara', source_refs: [] },
+    // 画面文字本身就是一条事实：grounding 核对的是"这个词有没有依据"，
+    // 不是"这个词在不在英语词典里"。文字逐字来自 IR，所以它有依据。
+    { text: 'CLOSED', source_refs: [] },
+  ]
+  const result = verifyCaptionGrounding({
+    text: 'The image shows a girl with silver hair in Akihabara. The image contains the text "CLOSED".',
+    facts,
+  })
+  assert.equal(result.ok, true, `不该报未依据词：${result.unsupported.join(', ')}`)
+  assert.deepEqual(result.unsupported, [])
+})
+
+test('画面文字不在事实里时，grounding 照样拦下来', () => {
+  const facts = [{ text: 'silver hair', source_refs: [] }]
+  const result = verifyCaptionGrounding({
+    text: 'The image shows a girl with silver hair. The image contains the text "OPEN".',
+    facts,
+  })
+  assert.equal(result.ok, false)
+  assert.ok(result.unsupported.includes('open'))
+})
+
+test('grounding 不放行 IR 里没有的形容词与物体', () => {
+  const facts = [{ text: 'silver hair', source_refs: [] }]
+  const result = verifyCaptionGrounding({
+    text: 'The image shows a girl with silver hair holding a crimson katana in a cathedral.',
+    facts,
+  })
+  assert.equal(result.ok, false)
+  for (const word of ['crimson', 'katana', 'cathedral']) {
+    assert.ok(result.unsupported.includes(word), `${word} 应当被判成没有依据`)
+  }
+})
+
+test('caption 模式不再计算成分句，tag 模式仍然计算', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const caption = await compilePrompt({ ir, profile: moss.config, kb: null })
+    assert.equal(caption.composed, null, 'caption 模式不该再算一遍成分句')
+    assert.equal(caption.description_candidate, null, 'caption 模式不该再算候选描述')
+    assert.equal(caption.stats.composed_clauses, 0)
+    assert.equal(caption.stats.description_candidate_chars, null)
+    // 正稿仍然完整，说明跳过的只是没人读的那一份。
+    assert.ok(caption.prompts.positive.startsWith('The image shows a girl'))
+
+    const illustrious = readJson('configs/model-profiles/illustrious.json')
+    const tagged = await compilePrompt({ ir, profile: illustrious, kb: null })
+    assert.ok(tagged.composed, 'tag 档必须照旧保留成分句')
+    assert.ok(tagged.description_candidate, 'tag 档必须照旧保留候选描述')
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('中文 Caption 明确报不支持，不会偷偷产出半英文半中文的文本', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const out = await composeMossCaption({ ir, profile: moss.config, facts: null, language: 'zh' })
+    assert.equal(out.ok, false)
+    assert.equal(out.text, '')
+    assert.equal(out.language, 'zh')
+    const failure = out.diagnostics.find((item) => item.error_code === MOSS_CODES.CAPTION_LANGUAGE_UNSUPPORTED)
+    assert.ok(failure, '缺少 CAPTION_LANGUAGE_UNSUPPORTED')
+    assert.equal(failure.severity, 'error')
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('moss 档案只声明支持英语，其它语言在配置校验里就被拒', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    assert.equal(moss.config.tag_standard.caption_language, 'en')
+
+    const broken = JSON.parse(JSON.stringify(moss.config))
+    broken.tag_standard.caption_language = 'zh'
+    const { validateModelProfile } = await import('../lib/model-profile/validate.js')
+    const result = validateModelProfile(broken, { configFile: 'moss.json' })
+    assert.equal(result.ok, false)
+    const hit = result.diagnostics.find((item) => item.error_code === 'TAG_STANDARD_CAPTION_LANGUAGE_UNSUPPORTED')
+    assert.ok(hit, `没有拦住 caption_language=zh：${result.diagnostics.map((item) => item.error_code).join(', ')}`)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('归一化 region 按画布换算成像素框，取整且不夹紧', () => {
+  // 合成坐标：[0,0,1,1] 铺满 832×1216。
+  assert.deepEqual(toPixelBox([0, 0, 1, 1], 832, 1216), [0, 0, 832, 1216])
+  // 0.25/0.1/0.75/0.9 → 208/121.6/624/1094.4，四舍五入到整数。
+  assert.deepEqual(toPixelBox([0.25, 0.1, 0.75, 0.9], 832, 1216), [208, 122, 624, 1094])
+  // 越界不裁剪：宁可拒收，也不悄悄改成一个看起来合法的框。
+  assert.equal(toPixelBox([-0.1, 0.1, 0.5, 0.5], 832, 1216), null)
+  assert.equal(toPixelBox([0.1, 0.1, 1.2, 0.5], 832, 1216), null)
+  // 零面积/反向框同样拒收。
+  assert.equal(toPixelBox([0.5, 0.5, 0.5, 0.6], 832, 1216), null)
+  assert.equal(toPixelBox([0.6, 0.5, 0.4, 0.6], 832, 1216), null)
+})
+
+test('abs_centralized 与 yxyx 同时成立时两个变换都生效', () => {
+  // toModelBox 直接给模型输入用的顺序：先中心化，再 yxyx。
+  assert.deepEqual(toModelBox([0, 0, 100, 50], 832, 1216), [-608, -416, -558, -316])
+
+  const ir = syntheticLayoutIr()
+  const profile = { config_id: 'moss' }
+  // umbrella 归一化 [0.5,0.05,0.95,0.35] → 像素 [416,61,790,426]
+  const abs = buildMossLayout({ ir, profile, caption: 'x' })
+  assert.deepEqual(abs.layout.items.find((entry) => entry.label === 'umbrella').bbox, [416, 61, 790, 426])
+
+  const centered = buildMossLayout({ ir, profile, caption: 'x', coordSpace: 'abs_centralized', bboxFormat: 'yxyx' })
+  assert.equal(centered.ok, true)
+  // 先平移（x-416、y-608），再换成 yxyx 顺序。
+  assert.deepEqual(
+    centered.layout.items.find((entry) => entry.label === 'umbrella').bbox,
+    [61 - 608, 416 - 416, 426 - 608, 790 - 416],
+  )
+  assert.equal(centered.layout.bbox_coord_space, 'abs_centralized')
+  assert.equal(centered.layout.bbox_format, 'yxyx')
+  assert.deepEqual(validateMossLayout(centered.layout), { ok: true, problems: [] })
+})
+
+test('Layout 画布默认取原图尺寸，显式覆盖时以覆盖为准', () => {
+  const ir = syntheticLayoutIr()
+  const profile = { config_id: 'moss' }
+  const natural = buildMossLayout({ ir, profile, caption: 'x' })
+  assert.deepEqual(natural.layout.summary.canvas, { width: 832, height: 1216 })
+
+  const scaled = buildMossLayout({ ir, profile, caption: 'x', canvasWidth: 512, canvasHeight: 768 })
+  assert.deepEqual(scaled.layout.summary.canvas, { width: 512, height: 768 })
+  // 框跟着画布走：0.25×512=128，而不是 832 下的 208。
+  assert.equal(scaled.layout.items.find((entry) => entry.label === '1girl').bbox[0], 128)
+})
+
+test('画面文字逐字保留，换行不被压平', () => {
+  const ir = syntheticLayoutIr()
+  const out = buildMossLayout({ ir, profile: { config_id: 'moss' }, caption: 'x' })
+  const text = out.layout.items.find((entry) => typeof entry.text === 'string')
+  assert.ok(text, '带 region 的画面文字应当进 Layout')
+  assert.equal(text.text, 'RAIN\nDAY')
+  assert.equal(text.label, 'text')
+  // 坐标来自 feature.region：0.1/0.02/0.6/0.12 → 83/24/499/146。
+  assert.deepEqual(text.bbox, [83, 24, 499, 146])
+})
+
+test('没有 region 的实体不进 Layout，也不编造坐标', () => {
+  const ir = syntheticLayoutIr()
+  delete ir.entities[1].region
+  const out = buildMossLayout({ ir, profile: { config_id: 'moss' }, caption: 'x' })
+  assert.equal(out.ok, true)
+  assert.equal(out.layout.items.some((entry) => entry.label === 'umbrella'), false)
+  assert.equal(out.stats.skipped, 1)
+  for (const item of out.layout.items) {
+    assert.equal(Array.isArray(item.bbox), true, `${item.label} 没有 bbox 却被写进了 items`)
+  }
+})
+
+test('没有 region 的画面文字只报一次没框，不硬塞坐标', () => {
+  const ir = syntheticLayoutIr()
+  delete ir.features[0].region
+  const out = buildMossLayout({ ir, profile: { config_id: 'moss' }, caption: 'x' })
+  assert.equal(out.layout.items.some((entry) => typeof entry.text === 'string'), false)
+  const warnings = out.diagnostics.filter((item) => item.error_code === MOSS_LAYOUT_CODES.TEXT_NO_REGION)
+  assert.equal(warnings.length, 1)
+  assert.equal(warnings[0].severity, 'warning')
+})
+
+test('越界 region 被显式拒收并给出诊断，不是静默丢弃', () => {
+  const ir = syntheticLayoutIr()
+  ir.entities[0].region = [0.25, 0.1, 1.4, 0.9]
+  const out = buildMossLayout({ ir, profile: { config_id: 'moss' }, caption: 'x' })
+  assert.equal(out.ok, true)
+  assert.equal(out.layout.items.some((entry) => entry.label === '1girl'), false)
+  const rejection = out.diagnostics.find((item) => item.error_code === MOSS_LAYOUT_CODES.BOX_REJECTED)
+  assert.ok(rejection, '越界框没有报 BOX_REJECTED')
+  assert.equal(rejection.severity, 'warning')
+})
+
+test('IR 里一个可靠框都没有时，Layout 明确失败而不是给空 JSON', () => {
+  const ir = { schema_version: '1.0', image: { width: 832, height: 1216 }, entities: [], relations: [], features: [], uncertainties: [] }
+  const out = buildMossLayout({ ir, profile: { config_id: 'moss' }, caption: 'x' })
+  assert.equal(out.ok, false)
+  assert.equal(out.layout, null)
+  assert.equal(out.text, '')
+  assert.ok(out.diagnostics.some((item) => item.error_code === MOSS_LAYOUT_CODES.EMPTY))
+})
+
+test('画布读不到时拒绝编译，不默认成某个尺寸', () => {
+  const ir = { schema_version: '1.0', entities: syntheticLayoutIr().entities, relations: [], features: [], uncertainties: [] }
+  const out = buildMossLayout({ ir, profile: { config_id: 'moss' }, caption: 'x' })
+  assert.equal(out.ok, false)
+  assert.ok(out.diagnostics.some((item) => item.error_code === MOSS_LAYOUT_CODES.CANVAS_UNKNOWN))
+})
+
+test('坐标格式不在官方定义里时整份拒绝，不猜', () => {
+  const ir = syntheticLayoutIr()
+  const out = buildMossLayout({ ir, profile: { config_id: 'moss' }, caption: 'x', coordSpace: 'relative', bboxFormat: 'xyxy' })
+  assert.equal(out.ok, false)
+  assert.ok(out.diagnostics.some((item) => item.error_code === MOSS_LAYOUT_CODES.FORMAT_INVALID))
+})
+
+test('元素超过上限时截断并报数量，不静默少给', () => {
+  const ir = syntheticLayoutIr()
+  const out = buildMossLayout({ ir, profile: { config_id: 'moss' }, caption: 'x', maxElements: 1 })
+  assert.equal(out.ok, true)
+  assert.equal(out.layout.items.length, 1)
+  // 按面积降序：女孩那块比伞大，留下的是她。
+  assert.equal(out.layout.items[0].label, '1girl')
+  const truncation = out.diagnostics.find((item) => item.error_code === MOSS_LAYOUT_CODES.TRUNCATED)
+  assert.ok(truncation)
+  assert.equal(truncation.severity, 'info')
+})
+
+test('validateMossLayout 独立复核顺序、范围与轴序', () => {
+  const ir = syntheticLayoutIr()
+  const good = buildMossLayout({ ir, profile: { config_id: 'moss' }, caption: 'x' })
+  assert.deepEqual(validateMossLayout(good.layout), { ok: true, problems: [] })
+
+  const flipped = JSON.parse(JSON.stringify(good.layout))
+  const first = flipped.items[0]
+  first.bbox = [first.bbox[2], first.bbox[3], first.bbox[0], first.bbox[1]]
+  assert.equal(validateMossLayout(flipped).ok, false)
+
+  const outOfCanvas = JSON.parse(JSON.stringify(good.layout))
+  outOfCanvas.items[0].bbox = [0, 0, 99999, 99999]
+  assert.equal(validateMossLayout(outOfCanvas).ok, false)
+
+  // 同样的框换成 yxyx 声明后必须仍然合法 —— 校验要看轴序，不能直接比大小。
+  const asYxyx = JSON.parse(JSON.stringify(good.layout))
+  asYxyx.bbox_format = 'yxyx'
+  asYxyx.items = asYxyx.items.map((item) => ({
+    ...item,
+    bbox: [item.bbox[1], item.bbox[0], item.bbox[3], item.bbox[2]],
+  }))
+  assert.deepEqual(validateMossLayout(asYxyx), { ok: true, problems: [] })
+})
+
+test('serializeMossLayout 输出可解析的缩进 JSON', () => {
+  const ir = syntheticLayoutIr()
+  const out = buildMossLayout({ ir, profile: { config_id: 'moss' }, caption: 'The image shows a girl.' })
+  const text = serializeMossLayout(out.layout)
+  assert.equal(text.includes('\n  '), true, '应当是可读的缩进 JSON')
+  const parsed = JSON.parse(text)
+  assert.equal(parsed.schema_version, out.layout.schema_version)
+  assert.equal(parsed.summary.caption, 'The image shows a girl.')
+  assert.equal(parsed.bbox_coord_space, 'abs')
+  assert.equal(parsed.bbox_format, 'xyxy')
+})
+
+test('只有显式要求 Layout 才输出 JSON，默认仍是 Caption', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+
+    const plain = await compilePrompt({ ir, profile: moss.config, kb: null })
+    assert.equal(plain.layout, null)
+    assert.equal(plain.prompts.positive.startsWith('The image shows'), true)
+
+    const laid = await compilePrompt({ ir, profile: moss.config, kb: null, layout: true })
+    assert.equal(laid.layout.ok, true)
+    assert.equal(laid.layout.validation.ok, true)
+    assert.equal(laid.register, 'caption')
+    // 正稿变成 JSON，但写法没有变成第四种。
+    assert.equal(laid.prompts.positive.trimStart().startsWith('{'), true)
+    assert.equal(JSON.parse(laid.prompts.positive).items.length, 2)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('Layout 失败不会拖坏 Caption：正稿仍是那段话', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    // 这份 IR 没有任何 region，Layout 必然失败。
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    for (const entity of ir.entities) delete entity.region
+
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null, layout: true })
+    assert.equal(out.layout.ok, false)
+    assert.equal(out.prompts.positive.startsWith('The image shows'), true, 'Layout 失败时不该把正稿清空')
+    assert.equal(out.register, 'caption')
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('非 caption 档案传 layout 也不会产出 JSON', async () => {
+  const { dataDir } = await loadRealConfigStore()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    for (const id of ['anima', 'illustrious']) {
+      const profile = readJson(`configs/model-profiles/${id}.json`)
+      const out = await compilePrompt({ ir, profile, kb: null, layout: true })
+      assert.equal(out.layout, null, `${id} 不该产出 Layout`)
+      assert.notEqual(out.prompts.positive.trimStart().startsWith('{'), true)
+    }
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('干净的文生图工作流不会被误报成有改写节点', () => {
+  const prompt = {
+    1: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'm.safetensors' } },
+    2: { class_type: 'CLIPTextEncode', inputs: { text: 'a girl', clip: [1, 1] } },
+    3: { class_type: 'CLIPTextEncode', inputs: { text: 'worst quality', clip: [1, 1] } },
+    4: { class_type: 'KSampler', inputs: { positive: [2, 0], negative: [3, 0], model: [1, 0], latent_image: [5, 0] } },
+    5: { class_type: 'EmptyLatentImage', inputs: { width: 832, height: 1216, batch_size: 1 } },
+  }
+  const result = detectPromptEnhancers(prompt)
+  assert.equal(result.detected, false)
+  assert.deepEqual(result.enhancers, [])
+  // 加载器顺着 clip 输入能走到，但它不是改写节点。
+  assert.equal(result.enhancers.some((item) => item.class_type === 'CheckpointLoaderSimple'), false)
+})
+
+test('采样器前面直插的改写节点被认出，并按连接说明它属于哪一路', () => {
+  const prompt = {
+    1: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'm.safetensors' } },
+    2: { class_type: 'CLIPTextEncode', inputs: { text: 'a girl', clip: [1, 1] } },
+    3: { class_type: 'CLIPTextEncode', inputs: { text: 'worst quality', clip: [1, 1] } },
+    6: { class_type: 'PromptEnhancer', inputs: { prompt: [2, 0], seed: 1 } },
+    4: { class_type: 'KSampler', inputs: { positive: [6, 0], negative: [3, 0], model: [1, 0], latent_image: [5, 0] } },
+    5: { class_type: 'EmptyLatentImage', inputs: { width: 832, height: 1216, batch_size: 1 } },
+  }
+  const result = detectPromptEnhancers(prompt)
+  assert.equal(result.detected, true)
+  const hit = result.enhancers.find((item) => item.node_id === '6')
+  assert.ok(hit)
+  assert.deepEqual(hit.samplers, ['4'])
+  assert.ok(hit.reasons.includes('inline_before_sampler'))
+  assert.equal(result.diagnostics[0].severity, 'warning')
+  assert.equal(result.diagnostics[0].error_code, COMFY_CODES.PROMPT_ENHANCER_DETECTED)
+})
+
+test('文本节点上游的 LLM 节点被认出，哪怕名字不在词表里', () => {
+  const prompt = {
+    1: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'm.safetensors' } },
+    2: { class_type: 'CLIPTextEncode', inputs: { text: 'a girl', clip: [1, 1] } },
+    3: { class_type: 'CLIPTextEncode', inputs: { text: 'worst quality', clip: [1, 1] } },
+    7: { class_type: 'RewriteNode', inputs: { text: [2, 0] } },
+    8: { class_type: 'CLIPTextEncode', inputs: { text: [7, 0], clip: [1, 1] } },
+    4: { class_type: 'KSampler', inputs: { positive: [8, 0], negative: [3, 0], model: [1, 0], latent_image: [5, 0] } },
+    5: { class_type: 'EmptyLatentImage', inputs: { width: 832, height: 1216, batch_size: 1 } },
+  }
+  const result = detectPromptEnhancers(prompt)
+  assert.equal(result.detected, true)
+  const hit = result.enhancers.find((item) => item.node_id === '7')
+  assert.ok(hit, `没认出改写节点：${JSON.stringify(result.enhancers)}`)
+  assert.ok(hit.reasons.includes('upstream_of_text'))
+})
+
+test('识别 Enhancer 只读不写：传进去的工作流对象一个字节都不变', () => {
+  const prompt = {
+    1: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'm.sft' } },
+    2: { class_type: 'CLIPTextEncode', inputs: { text: 'a girl', clip: [1, 1] } },
+    6: { class_type: 'PromptEnhancer', inputs: { prompt: [2, 0] } },
+    4: { class_type: 'KSampler', inputs: { positive: [6, 0], negative: [2, 0], model: [1, 0] } },
+  }
+  const before = JSON.stringify(prompt)
+  detectPromptEnhancers(prompt)
+  assert.equal(JSON.stringify(prompt), before)
+})
+
+test('MOSS 官方模板的版本门槛只报不改', () => {
+  assert.equal(compareVersions('0.42.0', '0.42.0'), 0)
+  assert.equal(compareVersions('0.43.1', '0.42.0'), 1)
+  assert.equal(compareVersions('0.41.9', '0.42.0'), -1)
+  // 带后缀的版本串也要能读。
+  assert.equal(compareVersions('v0.43.0-dev', '0.42.0'), 1)
+  assert.equal(compareVersions('unknown', '0.42.0'), null)
+
+  const old = mossTemplateSupport({ comfyui_version: '0.41.0' })
+  assert.equal(old.t2i.status, 'unsupported')
+  assert.equal(old.edit.status, 'unsupported')
+
+  const fresh = mossTemplateSupport({ comfyui_version: '0.44.2' })
+  assert.equal(fresh.t2i.status, 'supported')
+  assert.equal(fresh.edit.status, 'supported')
+
+  const between = mossTemplateSupport({ comfyui_version: '0.42.3' })
+  assert.equal(between.t2i.status, 'supported')
+  assert.equal(between.edit.status, 'unsupported')
+
+  // 读不到版本就给 unknown，不猜。
+  const unknown = mossTemplateSupport(null)
+  assert.equal(unknown.comfyui_version, null)
+  assert.equal(unknown.t2i.status, 'unknown')
+})
+
+test('三档案对同一份 IR 各自编译，谁也不翻译谁的成品', async () => {
+  const { store, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const outputs = {}
+    for (const id of ['anima', 'illustrious', 'moss']) {
+      const entry = store.getModelProfile(id)
+      outputs[id] = await compilePrompt({ ir, profile: entry.config, kb: null })
+    }
+
+    assert.equal(outputs.anima.register, 'clause')
+    assert.equal(outputs.illustrious.register, 'tag')
+    assert.equal(outputs.moss.register, 'caption')
+
+    // 三档的写法彼此可辨：标签档是权重标签，clause 档是逗号串起来的分句，
+    // caption 档才是有主语和谓语的完整句子。
+    assert.ok(outputs.illustrious.prompts.positive.includes('('))
+    assert.equal(outputs.anima.prompts.positive.includes('. '), false)
+    assert.equal(outputs.anima.prompts.positive.endsWith('.'), false)
+    assert.equal(outputs.moss.prompts.positive.includes('. '), true)
+    assert.equal(outputs.moss.prompts.positive.endsWith('.'), true)
+    assert.equal(outputs.moss.prompts.positive.startsWith('The image shows'), true)
+
+    // 三份正稿互不相同：同源不同写法，不是把一份翻译成另一份。
+    const positives = new Set(Object.values(outputs).map((item) => item.prompts.positive))
+    assert.equal(positives.size, 3)
+
+    // 负向也各自独立：moss 只有官方四条。
+    assert.deepEqual(outputs.moss.prompts.negative.split(', '), [...MOSS_NEGATIVE_BASE])
+    assert.ok(outputs.illustrious.prompts.negative.split(', ').length > MOSS_NEGATIVE_BASE.length)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('caption 档的台账只认 Caption 一个通道，不把标签版算成去向', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null })
+    const ledger = out.fact_ledger
+
+    // 每条记录要么进了 Caption，要么明确说了没进；不存在「标签版里有所以算保住了」。
+    for (const record of ledger.records) {
+      if (record.in_caption) {
+        assert.deepEqual(record.channels, ['caption'])
+        assert.deepEqual(record.missing_channels, [])
+      } else {
+        assert.deepEqual(record.channels, [])
+        assert.deepEqual(record.missing_channels, ['caption'])
+      }
+    }
+    assert.ok(ledger.stats.in_caption > 0)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('caption 档不报「三通道齐全」，那个数字在单通道下没有意义', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null })
+    const stats = out.fact_ledger.stats
+
+    // null 不是 0：0 会被读成「一条都没保住」，实际是「这个口径不适用」。
+    assert.equal(stats.retained_all_channels, null)
+    assert.equal(stats.retained_partial, null)
+    assert.equal(stats.missing_from_tags, null)
+    assert.equal(stats.missing_from_description, null)
+    assert.equal(stats.missing_from_candidate, null)
+    assert.equal(typeof stats.in_caption, 'number')
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('进了 Caption 的关系观察，处置是 retained 而不是 unknown', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null })
+    const relation = out.fact_ledger.records.find((item) => item.fact_id.startsWith('relation:'))
+
+    assert.ok(relation, '夹具里有一条 holding 关系')
+    assert.equal(relation.in_caption, true)
+    // 关系不进词条表，但它确实被写进了那句话。台账不能一边说去向未知、
+    // 一边在 channels 里写着 caption。
+    assert.equal(relation.disposition, 'retained')
+    assert.equal(relation.dropped_at, null)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('explainFact 在 caption 档说的是 Caption，不是标签版', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null })
+    const record = out.fact_ledger.records.find((item) => item.in_caption && item.category === 'composition')
+
+    assert.ok(record, '构图那条观察进了 Caption')
+    const sentence = explainFact(record)
+    assert.ok(sentence.includes('最终进入：Caption'))
+    // 标签版在这条路上仍然会被渲染出来（只是不用它的成品），
+    // 但它不是这条观察的去向，不能出现在这句话里。
+    assert.equal(sentence.includes('标签版'), false)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('没被写进 Caption 的事实，报的是 Caption 这一步，不是「未知阶段」', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    // 同类事实塞到超出 perSection 预算，必然有落选的那几条。
+    const base = syntheticLayoutIr()
+    const features = [...(base.features ?? [])]
+    for (const text of ['silver hair', 'long hair', 'twin tails', 'hair ribbon', 'ahoge', 'hair intakes']) {
+      features.push({ category: 'appearance', key: 'hair', value: text, confidence: 0.9, status: 'confirmed' })
+    }
+    const ir = { ...base, features }
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null })
+
+    const lost = out.fact_ledger.records.filter(
+      (item) => item.disposition === 'dropped' && item.category === 'appearance' && String(item.key ?? '').startsWith('hair'),
+    )
+    assert.ok(lost.length > 0, '预算之外的头发描述确实存在')
+    for (const record of lost) {
+      assert.equal(record.dropped_at, 'caption')
+      assert.ok(String(record.dropped_reason ?? '').length > 0)
+    }
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('IR 里只剩否定式与占位符时，caption 同样硬失败，不是勉强凑一句', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    // 这不是空 IR：每条字段都填了，只是填的内容不能写进正向描述。
+    // 「没有伞」「unknown」这类观察能说明画面缺什么，说不出画面是什么。
+    const unusable = {
+      schema_version: '1.0',
+      image: { width: 832, height: 1216 },
+      entities: [],
+      relations: [],
+      features: [
+        { category: 'background', key: 'absence', value: 'no umbrella', confidence: 0.8, status: 'confirmed' },
+        { category: 'appearance', key: 'hair_color', value: 'unknown', confidence: 0.3, status: 'tentative' },
+        { category: 'pose_action', key: 'stance', value: 'indeterminate', confidence: 0.2, status: 'tentative' },
+      ],
+      uncertainties: [{ category: 'expression', key: 'mouth', reason: '看不清' }],
+    }
+    const out = await compilePrompt({ ir: unusable, profile: moss.config, kb: null })
+
+    assert.equal(out.register, 'caption')
+    assert.equal(out.caption.ok, false)
+    assert.equal(out.prompts.positive, '')
+    const failure = out.diagnostics.find((item) => item.error_code === MOSS_CODES.CAPTION_EMPTY)
+    assert.ok(failure)
+    assert.equal(failure.severity, 'error')
+    // 观察去哪了要答得上来，不然"为什么一句都写不出"无从解释。
+    // 这三条根本没进池子，所以 `facts_dropped` 是空的；挡它们的是更早的规则，
+    // 那份计数在 `observation_stats` 里。
+    assert.equal(out.caption.facts_dropped.length, 0)
+    assert.equal(out.caption.observation_stats.scanned, 3)
+    assert.equal(out.caption.observation_stats.negated, 2)
+    assert.equal(out.caption.observation_stats.placeholder, 1)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('多人画面里，别人的外观不会被写成主体的外观', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    // 两个人物实体、各有一份发色。Caption 只描述主体那位，
+    // 另一位的银发不能被搬到她头上——那是最典型的"看着都对，事实全错"。
+    const ir = {
+      schema_version: '1.0',
+      image: { width: 1024, height: 1024 },
+      entities: [
+        { entity_id: 'e1', kind: 'person', label: 'girl', count: 1, importance: 0.9, region: [0.1, 0.2, 0.45, 0.9] },
+        { entity_id: 'e2', kind: 'person', label: 'girl', count: 1, importance: 0.5, region: [0.55, 0.2, 0.9, 0.9] },
+        { entity_id: 'e3', kind: 'object', label: 'umbrella', importance: 0.3, region: [0.4, 0.05, 0.7, 0.4] },
+      ],
+      relations: [
+        { relation_id: 'r1', type: 'holding', from: 'e1', to: 'e3', description: 'right hand holds the umbrella handle', confidence: 0.8, status: 'confirmed' },
+      ],
+      features: [
+        { category: 'subject', key: 'count', value: '2girls', confidence: 0.9, status: 'confirmed' },
+        { category: 'appearance', key: 'hair_color', value: 'black hair', entity_id: 'e1', confidence: 0.8, status: 'confirmed' },
+        { category: 'appearance', key: 'hair_color', value: 'silver hair', entity_id: 'e2', confidence: 0.8, status: 'confirmed' },
+        { category: 'clothing', key: 'upper_body', value: 'school uniform', entity_id: 'e1', confidence: 0.7, status: 'confirmed' },
+        { category: 'clothing', key: 'upper_body', value: 'red coat', entity_id: 'e2', confidence: 0.7, status: 'confirmed' },
+      ],
+      uncertainties: [],
+    }
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null })
+    const text = out.prompts.positive
+
+    assert.equal(out.caption.ok, true)
+    // 主体是 importance 更高的 e1。
+    assert.ok(text.includes('black hair'))
+    assert.equal(text.includes('silver hair'), false)
+    assert.ok(text.includes('school uniform'))
+    assert.equal(text.includes('red coat'), false)
+    // 另一位的观察没有因此被当成"没依据"：它们只是不在这段描述里。
+    const others = out.fact_ledger.records.filter((item) => item.entity_id === 'e2')
+    assert.ok(others.length > 0)
+    for (const record of others) assert.equal(record.in_caption, false)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('人物与物体的关系句能成句，物体本身也算这句话的依据', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = {
+      schema_version: '1.0',
+      image: { width: 1024, height: 1024 },
+      entities: [
+        { entity_id: 'e1', kind: 'person', label: 'girl', count: 1, importance: 0.9, region: [0.1, 0.2, 0.5, 0.9] },
+        { entity_id: 'e2', kind: 'object', label: 'umbrella', importance: 0.4, region: [0.5, 0.1, 0.9, 0.6] },
+      ],
+      relations: [
+        { relation_id: 'r1', type: 'holding', from: 'e1', to: 'e2', description: 'right hand holds the umbrella handle', confidence: 0.85, status: 'confirmed' },
+      ],
+      features: [],
+      uncertainties: [],
+    }
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null })
+
+    assert.equal(out.caption.ok, true)
+    assert.ok(out.prompts.positive.includes('Her right hand holds the umbrella handle.'))
+    // 那把伞不是背景板：它在关系句里被点名了，台账要认它进过成品。
+    const umbrella = out.fact_ledger.records.find((item) => item.fact_id === 'entity:e2')
+    assert.ok(umbrella)
+    assert.equal(umbrella.in_caption, true)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
 })
