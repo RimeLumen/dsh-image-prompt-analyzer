@@ -30,11 +30,27 @@ const ENHANCER_PATTERNS = Object.freeze([
   /ollama/i,
   /chatglm|qwen[\s_-]*chat|deepseek|gpt[\s_-]?(4|3|chat|node)/i,
   /text[\s_-]*generat/i,
+  // "GenerateText" / "Generate Text"：词序跟 text_generate 相反，上面那条抓不到。
+  // 注意 "Generate" 结尾那个 e 不能漏，"generat" + "eText" 是接不上的。
+  /generat(e|ing)?[\s_-]*text/i,
   /(^|[^a-z])moss[\s_-]*image[\s_-]*(enhanc|prompt)/i,
 ])
 
+/**
+ * 改写开关藏在节点输入里，而不是另一个节点。
+ *
+ * MOSS 官方模板把 `enable_prompt_enhancer` / `prompt_enhancer_seed` 直接做成采样
+ * 节点上的输入：勾上之后，进模型的提示词在节点内部被改写一遍，图里根本找不到
+ * "另一个改写节点"。只看 class_type 的话这种改写是完全隐形的。
+ */
+const ENHANCER_INPUT_PATTERN = /(^|_)(prompt_)?enhanc(er|ement|e)?(_|$)/i
+
+/** 这些输入说明节点在吃图像——"把原图再发给 LLM"就是从这里发生的。 */
+const IMAGE_INPUT_PATTERN = /(^|_)(ref_image|image|images|pixels|input_image)(_|$)/i
+
 /** 文本节点：它们吐出来的就是提示词本身，链路经过它们是正常的。 */
-const TEXT_NODE_PATTERN = /text[\s_-]*encode|textencode|string|primitive|note|show[\s_-]*text|display/i
+const TEXT_NODE_PATTERN =
+  /text[\s_-]*encode|textencode|string|primitive|note|show[\s_-]*text|display|preview[\s_-]*any|previewany/i
 
 const SAMPLER_PATTERN = /^ksampler/i
 
@@ -81,12 +97,15 @@ export function detectPromptEnhancers(prompt) {
   }))
 
   const found = new Map()
-  const add = (node, reason, samplerId) => {
+  const add = (node, reason, samplerId, extra = null) => {
     const key = node.id
     const existing = found.get(key)
     if (existing) {
       if (!existing.reasons.includes(reason)) existing.reasons.push(reason)
       if (samplerId && !existing.samplers.includes(samplerId)) existing.samplers.push(samplerId)
+      if (extra?.input_keys) {
+        existing.input_keys = [...new Set([...(existing.input_keys ?? []), ...extra.input_keys])]
+      }
       return
     }
     found.set(key, {
@@ -94,6 +113,7 @@ export function detectPromptEnhancers(prompt) {
       class_type: node.class_type,
       reasons: [reason],
       samplers: samplerId ? [samplerId] : [],
+      ...(extra?.input_keys ? { input_keys: extra.input_keys } : {}),
     })
   }
 
@@ -102,6 +122,14 @@ export function detectPromptEnhancers(prompt) {
     if (ENHANCER_PATTERNS.some((pattern) => pattern.test(node.class_type))) {
       add(node, 'class_type', null)
     }
+  }
+
+  // 线索三：改写开关在节点的输入里。名字上看不出任何异常，链路上也没有中间节点，
+  // 但勾上之后提示词在节点内部被改写——这是 MOSS 官方模板的实际形态。
+  for (const node of nodes) {
+    const flags = Object.keys(node.inputs ?? {}).filter((key) => ENHANCER_INPUT_PATTERN.test(key))
+    if (flags.length === 0) continue
+    add(node, 'input_flag', null, { input_keys: flags })
   }
 
   // 线索一：结构。从采样器往回走，链路上第一个"既不是文本节点、也不是加载器"的
@@ -136,15 +164,23 @@ export function detectPromptEnhancers(prompt) {
     }
   }
 
-  const enhancers = [...found.values()]
+  const enhancers = [...found.values()].map((item) => {
+    const inputs = prompt[item.node_id]?.inputs ?? {}
+    const imageKeys = Object.keys(inputs).filter((key) => IMAGE_INPUT_PATTERN.test(key))
+    // 这个节点自己在吃图像：说明工作流会把原图再送进改写器。
+    // 插件自己从不重复传图，但用户有权知道工作流那头会发生什么。
+    return { ...item, uses_image_input: imageKeys.length > 0, image_inputs: imageKeys }
+  })
   const diagnostics = enhancers.map((item) => ({
     error_code: COMFY_CODES.PROMPT_ENHANCER_DETECTED,
     severity: 'warning',
     node_id: item.node_id,
-    field_path: '/class_type',
+    field_path: item.input_keys?.length ? `/${item.input_keys[0]}` : '/class_type',
     message:
       `节点 ${item.node_id}（${item.class_type}）看起来会改写提示词` +
+      (item.input_keys?.length ? `，改写开关在输入 ${item.input_keys.join('、')} 上` : '') +
       (item.samplers.length > 0 ? `，位于 KSampler ${item.samplers.join('、')} 的提示词链路上` : '') +
+      (item.uses_image_input ? `，并且它自己接收图像输入（${item.image_inputs.join('、')}）` : '') +
       '。交给 ComfyUI 的 Caption / Layout 会被它改一遍再进模型。',
     suggested_fix:
       '本插件不会替你改工作流。要用逐词可追溯的 Caption 或 JSON Layout，就在 ComfyUI 里把这个节点旁路掉（把文本节点直连采样器）；' +
@@ -160,6 +196,62 @@ export function detectPromptEnhancers(prompt) {
       enhancers.length === 0
         ? '提示词链路上没有发现改写节点。'
         : '发现改写节点。插件只报告，不修改工作流，也不会因此重新分析图片。',
+  }
+}
+
+/**
+ * UI 格式（含子图）的改写节点扫描。
+ *
+ * UI 工作流的连线是 `links` 数组，节点输入只有槽位号，追不出"谁在给提示词做加工"，
+ * 所以这里只按节点类型认，不做链路推断——宁可少说，也不能把子图里的普通节点
+ * 说成改写器。子图是 MOSS 模板藏东西的地方，所以 `definitions.subgraphs` 也要走一遍。
+ */
+export function detectUiPromptEnhancers(workflow) {
+  const found = new Map()
+  const visit = (nodes, scope) => {
+    for (const node of Array.isArray(nodes) ? nodes : []) {
+      const type = typeof node?.type === 'string' ? node.type : ''
+      if (type === '') continue
+      if (!ENHANCER_PATTERNS.some((pattern) => pattern.test(type))) continue
+      const id = node?.id === undefined || node?.id === null ? '?' : String(node.id)
+      const key = `${scope}/${id}`
+      if (found.has(key)) continue
+      found.set(key, { node_id: id, class_type: type, scope, reasons: ['class_type'] })
+    }
+  }
+
+  visit(workflow?.nodes, 'root')
+  const definitions = workflow?.definitions?.subgraphs
+  if (Array.isArray(definitions)) {
+    for (const subgraph of definitions) {
+      const name = typeof subgraph?.name === 'string' && subgraph.name !== '' ? subgraph.name : 'subgraph'
+      visit(subgraph?.nodes, name)
+    }
+  }
+
+  const enhancers = [...found.values()]
+  const subgraphHits = enhancers.filter((item) => item.scope !== 'root').length
+  return {
+    detected: enhancers.length > 0,
+    enhancers,
+    chains: [],
+    diagnostics: enhancers.map((item) => ({
+      error_code: COMFY_CODES.PROMPT_ENHANCER_DETECTED,
+      severity: 'warning',
+      node_id: item.node_id,
+      field_path: '/type',
+      message:
+        `UI 工作流里发现改写节点 ${item.node_id}（${item.class_type}）` +
+        (item.scope === 'root' ? '' : `，位于子图 ${item.scope} 内`) +
+        '。UI 格式的连线是槽位号，追不出它接在谁后面。',
+      suggested_fix:
+        '本插件不会替你改工作流。要用逐词可追溯的 Caption 或 JSON Layout，就在 ComfyUI 里把它旁路掉；' +
+        '也可以把这份 UI 工作流另存为 API 格式再检查一次，那样能看清它到底接在哪一段提示词链路上。',
+    })),
+    note:
+      enhancers.length === 0
+        ? 'UI 格式只按节点类型扫描，没有发现已知的改写节点。'
+        : `UI 格式只按节点类型扫描（含 ${subgraphHits} 个子图命中），不推断链路；要看清接线请用 API 格式。`,
   }
 }
 

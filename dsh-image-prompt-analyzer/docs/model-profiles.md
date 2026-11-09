@@ -189,11 +189,22 @@ Layout 不是第四种 Profile，也不是新的 `prompt_style`。它是在 `cap
 一遍——而且是不可追溯的改写。
 
 `comfyui_inspect_workflow` 现在会检查提示词链路上有没有这类节点，结果在
-`prompt_enhancer` 字段里：
+`prompt_enhancer` 字段里。三条判定线索，任一成立就报：
 
-- 名字像改写节点的（`PromptEnhancer`、`OllamaGenerate`、`LLM`、`TextGenerate` …）
+- 名字像改写节点的（`PromptEnhancer`、`OllamaGenerate`、`LLM`、`GenerateText` …）
 - 结构上可疑的：直接接在采样器正/负向输入上的非文本节点（`inline_before_sampler`），
   或文本编码节点上游还挂着别的节点（`upstream_of_text`）
+- 改写开关藏在节点输入里（`input_flag`）：MOSS 官方模板把 `enable_prompt_enhancer` /
+  `prompt_enhancer_seed` 直接做成采样节点的输入。勾上之后提示词在节点内部被改写，
+  工作流里根本找不到"另一个改写节点"——只看 class_type 的话这种改写是完全隐形的。
+
+每条命中还会标 `uses_image_input` / `image_inputs`：改写节点自己接了图像输入，
+说明工作流会把原图再送进改写器。**这是工作流那头的行为，不是插件的行为**——插件
+始终只把原图发一次给视觉模型，Caption / Layout 都从已有 IR 编译。
+
+UI 格式（含子图）走另一条路：连线是槽位号，追不出谁接在谁后面，所以只按节点类型
+扫描，`definitions.subgraphs` 里的节点也扫，结果里带 `scope` 标明命中在哪个子图。
+UI 格式不返回 `chains`，`note` 里会说明"只按节点类型扫描"。
 
 它**只报告，不改工作流，不重新分析图片**。要用逐词可追溯的 Caption / Layout，
 就在 ComfyUI 里把这个节点旁路掉。

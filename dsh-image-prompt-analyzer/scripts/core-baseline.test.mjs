@@ -28,7 +28,7 @@ import {
   toPixelBox,
   validateMossLayout,
 } from '../lib/compile/moss-layout.js'
-import { compareVersions, detectPromptEnhancers, mossTemplateSupport } from '../lib/comfyui/enhancer.js'
+import { compareVersions, detectPromptEnhancers, detectUiPromptEnhancers, mossTemplateSupport } from '../lib/comfyui/enhancer.js'
 import { createConfigStore, resolveProfileRequest } from '../lib/config/loader.js'
 // PLUGIN_CONFIG_CODES 没有从 plugin-config.js 导出，所以这里比对错误码字面量。
 // 字面量同时也是对外契约的一部分：诊断里的 error_code 就是这些字符串。
@@ -6082,4 +6082,132 @@ test('人物与物体的关系句能成句，物体本身也算这句话的依�
   } finally {
     rmSync(dataDir, { recursive: true, force: true })
   }
+})
+
+// ---------------------------------------------------------------------------
+// 最终验收：改写开关藏在输入里、UI 子图、以及"不许误报"的边界。
+// ---------------------------------------------------------------------------
+
+test('MOSS 模板把改写开关放在采样节点输入里，名字上看不出来也能认出来', () => {
+  const prompt = {
+    1: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'm.safetensors' } },
+    2: { class_type: 'CLIPTextEncode', inputs: { text: 'a girl', clip: [1, 1] } },
+    3: { class_type: 'CLIPTextEncode', inputs: { text: 'worst quality', clip: [1, 1] } },
+    4: {
+      class_type: 'MOSSImageT2I',
+      inputs: {
+        positive: [2, 0],
+        negative: [3, 0],
+        model: [1, 0],
+        enable_prompt_enhancer: true,
+        prompt_enhancer_seed: 42,
+      },
+    },
+  }
+  const result = detectPromptEnhancers(prompt)
+  assert.equal(result.detected, true)
+  const hit = result.enhancers.find((item) => item.node_id === '4')
+  assert.ok(hit, `没认出输入里的改写开关：${JSON.stringify(result.enhancers)}`)
+  assert.ok(hit.reasons.includes('input_flag'))
+  assert.deepEqual([...hit.input_keys].sort(), ['enable_prompt_enhancer', 'prompt_enhancer_seed'])
+  // 普通文本节点没有这种输入，不能被连带算进去。
+  assert.equal(result.enhancers.some((item) => item.node_id === '2'), false)
+  assert.equal(result.diagnostics[0].field_path, '/enable_prompt_enhancer')
+})
+
+test('Preview Any 是文本直通节点，不当作改写器', () => {
+  const prompt = {
+    1: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'm.safetensors' } },
+    2: { class_type: 'CLIPTextEncode', inputs: { text: 'a girl', clip: [1, 1] } },
+    3: { class_type: 'CLIPTextEncode', inputs: { text: 'worst quality', clip: [1, 1] } },
+    6: { class_type: 'PreviewAny', inputs: { source: [2, 0] } },
+    7: { class_type: 'CLIPTextEncode', inputs: { text: [6, 0], clip: [1, 1] } },
+    4: { class_type: 'KSampler', inputs: { positive: [7, 0], negative: [3, 0], model: [1, 0] } },
+  }
+  const result = detectPromptEnhancers(prompt)
+  assert.equal(result.detected, false, `PreviewAny 被误报：${JSON.stringify(result.enhancers)}`)
+})
+
+test('普通字符串拼接节点不被误判为改写器', () => {
+  const prompt = {
+    1: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'm.safetensors' } },
+    2: { class_type: 'CLIPTextEncode', inputs: { text: 'a girl', clip: [1, 1] } },
+    3: { class_type: 'CLIPTextEncode', inputs: { text: 'worst quality', clip: [1, 1] } },
+    6: { class_type: 'StringConcatenate', inputs: { string_a: [2, 0], string_b: 'masterpiece', delimiter: ', ' } },
+    4: { class_type: 'KSampler', inputs: { positive: [6, 0], negative: [3, 0], model: [1, 0] } },
+  }
+  const result = detectPromptEnhancers(prompt)
+  assert.equal(result.detected, false, `拼接节点被误报：${JSON.stringify(result.enhancers)}`)
+})
+
+test('GenerateText 这种词序也能按名字认出来', () => {
+  const prompt = {
+    1: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'm.safetensors' } },
+    2: { class_type: 'CLIPTextEncode', inputs: { text: 'a girl', clip: [1, 1] } },
+    3: { class_type: 'CLIPTextEncode', inputs: { text: 'worst quality', clip: [1, 1] } },
+    6: { class_type: 'GenerateText', inputs: { prompt: [2, 0], model: 'qwen' } },
+    7: { class_type: 'CLIPTextEncode', inputs: { text: [6, 0], clip: [1, 1] } },
+    4: { class_type: 'KSampler', inputs: { positive: [7, 0], negative: [3, 0], model: [1, 0] } },
+  }
+  const result = detectPromptEnhancers(prompt)
+  const hit = result.enhancers.find((item) => item.node_id === '6')
+  assert.ok(hit, `没认出 GenerateText：${JSON.stringify(result.enhancers)}`)
+  assert.ok(hit.reasons.includes('class_type'))
+})
+
+test('改写节点自己吃图像时，报告里说清它会再收到一次原图', () => {
+  const prompt = {
+    1: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'm.safetensors' } },
+    2: { class_type: 'CLIPTextEncode', inputs: { text: 'a girl', clip: [1, 1] } },
+    3: { class_type: 'CLIPTextEncode', inputs: { text: 'worst quality', clip: [1, 1] } },
+    9: { class_type: 'LoadImage', inputs: { image: 'a.png' } },
+    6: { class_type: 'PromptEnhancer', inputs: { prompt: [2, 0], ref_image: [9, 0] } },
+    4: { class_type: 'KSampler', inputs: { positive: [6, 0], negative: [3, 0], model: [1, 0] } },
+  }
+  const result = detectPromptEnhancers(prompt)
+  const hit = result.enhancers.find((item) => item.node_id === '6')
+  assert.equal(hit.uses_image_input, true)
+  assert.deepEqual(hit.image_inputs, ['ref_image'])
+  assert.ok(result.diagnostics[0].message.includes('图像输入'))
+  // 这条只是"工作流那头会传图"，插件自己仍然一张图都不发。
+  assert.ok(result.note.includes('不会因此重新分析图片'))
+})
+
+test('UI 工作流子图里的改写节点也能认出来', () => {
+  const workflow = {
+    nodes: [
+      { id: 1, type: 'CheckpointLoaderSimple' },
+      { id: 2, type: 'CLIPTextEncode' },
+      { id: 3, type: 'KSampler' },
+    ],
+    links: [],
+    definitions: {
+      subgraphs: [
+        { name: 'MOSS 出图子图', nodes: [{ id: 11, type: 'MOSSImagePromptEnhancer' }, { id: 12, type: 'CLIPTextEncode' }] },
+      ],
+    },
+  }
+  const result = detectUiPromptEnhancers(workflow)
+  assert.equal(result.detected, true)
+  const hit = result.enhancers.find((item) => item.node_id === '11')
+  assert.ok(hit, `子图里的改写节点没认出来：${JSON.stringify(result.enhancers)}`)
+  assert.equal(hit.scope, 'MOSS 出图子图')
+  assert.ok(result.diagnostics[0].message.includes('子图'))
+  assert.deepEqual(result.chains, [])
+})
+
+test('UI 工作流没有改写节点时明说没有，不猜接线', () => {
+  const workflow = {
+    nodes: [
+      { id: 1, type: 'CheckpointLoaderSimple' },
+      { id: 2, type: 'CLIPTextEncode' },
+      { id: 3, type: 'KSampler' },
+    ],
+    links: [],
+  }
+  const result = detectUiPromptEnhancers(workflow)
+  assert.equal(result.detected, false)
+  assert.deepEqual(result.diagnostics, [])
+  assert.deepEqual(result.chains, [])
+  assert.ok(result.note.includes('只按节点类型扫描'))
 })

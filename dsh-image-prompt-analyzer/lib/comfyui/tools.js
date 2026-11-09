@@ -607,7 +607,17 @@ export function createComfyToolSpecs(runtime) {
       execute: guarded('comfyui_inspect_workflow', runtime, async (comfy, args) => {
         const workflow = await resolveWorkflow(comfy, args, args.signal)
         const report = inspectWorkflow(workflow)
-        if (report.format !== 'api') return report
+        if (report.format !== 'api') {
+          // UI 格式不做接线推断（连线是槽位号），但改写节点仍然要认出来：
+          // MOSS 模板把改写器放在子图里，直接 return 等于什么都不说。
+          const { detectUiPromptEnhancers } = await import('./enhancer.js')
+          const enhancer = detectUiPromptEnhancers(workflow)
+          return {
+            ...report,
+            prompt_enhancer: enhancer,
+            diagnostics: [...(report.diagnostics ?? []), ...enhancer.diagnostics],
+          }
+        }
         const { analyzeBindings } = await import('./bindings.js')
         const { detectPromptEnhancers, mossTemplateSupport } = await import('./enhancer.js')
         const bindings = analyzeBindings(workflow)
