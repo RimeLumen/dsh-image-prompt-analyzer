@@ -53,6 +53,7 @@ export async function runVisionStage({
   snapshot,
   taskId,
   args,
+  observationLanguage = 'en',
   diagnostics,
 }) {
   const logger = runtime.logger
@@ -81,6 +82,7 @@ export async function runVisionStage({
       visionConfig,
       provenance,
       locale: 'zh',
+      observationLanguage,
       signal: args.signal ?? null,
       logger,
     })
@@ -308,7 +310,7 @@ function pruneTraces(rootDir, maxTasks) {
   }
 }
 
-export async function compileStage({ runtime, ir, irBeforeEvidence = null, profile, preset, kb, includeNegative, character = null, poseControl = null, localAbsences = [], layout = null, diagnostics }) {
+export async function compileStage({ runtime, ir, irBeforeEvidence = null, profile, preset, kb, includeNegative, character = null, poseControl = null, localAbsences = [], layout = null, captionLanguage = null, diagnostics }) {
   const compiled = await compilePrompt({
     ir,
     irBeforeEvidence,
@@ -320,6 +322,9 @@ export async function compileStage({ runtime, ir, irBeforeEvidence = null, profi
     poseControl,
     // 可选 JSON Layout 的请求参数。只有 caption 档案会真的用它。
     layout,
+    // 本次分析定下来的 Caption 语言。视觉阶段用的是同一个值，所以 IR 里的事实
+    // 与这里要写的语言一定对得上；对不上（例如拿英语 IR 要中文）会被编译器拒稿。
+    captionLanguage,
     // 局部复核的缺席断言跟着进编译：它们不进提示词，只进台账。
     localAbsences,
   })

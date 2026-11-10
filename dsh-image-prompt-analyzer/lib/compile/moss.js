@@ -20,7 +20,7 @@
  */
 
 import { SEVERITY, diagnostic } from '../diagnostics.js'
-import { CAPTION_LANGUAGES } from '../model-profile/schema.js'
+import { CAPTION_LANGUAGES, DEFAULT_CAPTION_LANGUAGE, normalizeCaptionLanguage } from '../model-profile/schema.js'
 import { isNegatedObservation, isPlaceholderObservation } from './terms.js'
 import { normalizePromptText } from './fidelity.js'
 
@@ -33,6 +33,8 @@ export const MOSS_CODES = Object.freeze({
   CAPTION_EMPTY: 'COMPILE_MOSS_CAPTION_EMPTY',
   CAPTION_UNGROUNDED: 'COMPILE_MOSS_CAPTION_UNGROUNDED',
   CAPTION_LANGUAGE_UNSUPPORTED: 'COMPILE_MOSS_CAPTION_LANGUAGE_UNSUPPORTED',
+  // 要的语言与 IR 里已有的观察语言不一致：不是模板问题，是这份 IR 根本没有那种语言的事实。
+  CAPTION_LANGUAGE_EMPTY: 'COMPILE_MOSS_CAPTION_LANGUAGE_EMPTY',
   NEGATIVE_SFW_ADDED: 'COMPILE_MOSS_NEGATIVE_SFW_ADDED',
   NEGATIVE_CONTRADICTION_REMOVED: 'COMPILE_MOSS_NEGATIVE_CONTRADICTION_REMOVED',
   NEGATIVE_TRUNCATED: 'COMPILE_MOSS_NEGATIVE_TRUNCATED',
@@ -41,13 +43,14 @@ export const MOSS_CODES = Object.freeze({
 /**
  * 能可靠产出的 Caption 语言。
  *
- * 只有英语。不是没做，是做不了：IR 的观察值全部是英语（视觉阶段就是这么被要求的），
- * 本地 `res/` 里只有两份 Danbooru 标签表，没有任何中英对照资源。想输出中文，只有
- * 两条路——再加一次 LLM 翻译，或者逐词替换——前者违反"不增加 AI 调用"，后者会把
- * `silver hair` 拼成「银头发」这种既不是中文也不是英语的东西。两条都不做。
+ * 两种：`en` 与 `zh-CN`。中文不是把英文 Caption 翻一遍翻出来的——那需要额外一次
+ * 模型调用，而且译文回指不到任何一条观察。这里的做法是把语言一路推到最上游：
+ * 视觉阶段直接用中文写观察值（`scene.summary`、`features[].value`、`relations[].description`），
+ * IR 记下 `observation_language`，编译阶段按同一种语言组织句子。
+ * 所以「中文 Caption 有依据」与「英文 Caption 有依据」是同一件事，只是字不同。
  *
- * 留着这个常量是为了让"要中文"这件事**明确失败**，而不是悄悄给一段英文。
- * 清单本体放在 `model-profile/schema.js`：档案校验也要用它，档案层不该反过来依赖编译器。
+ * 语言对不上时（英语 IR 要中文，或反过来）明确报 `CAPTION_LANGUAGE_EMPTY` 而不是
+ * 交一段编出来的文本——清单本体放在 `model-profile/schema.js`，档案校验也要用它。
  */
 export const MOSS_CAPTION_LANGUAGES = CAPTION_LANGUAGES
 
@@ -108,8 +111,34 @@ const RATING_WORD = /^(?:safe|general|sensitive|nsfw|explicit|questionable)$/i
 const TEXT_CATEGORIES = new Set(['text'])
 const TEXT_KEYS = new Set(['text', 'lettering', 'sign_text', 'caption_text', 'logo_text'])
 
-function wordsOf(value) {
-  return normalizePromptText(value).split(' ').filter(Boolean)
+/** 中文的二字组切分：`银灰色长发` → `银灰/灰色/色长/长发`。 */
+const CJK_RUN = /[㐀-䶿一-鿿豈-﫿぀-ヿ]+/g
+
+function bigrams(run) {
+  const chars = [...run]
+  if (chars.length <= 2) return [run]
+  const grams = []
+  for (let index = 0; index < chars.length - 1; index += 1) grams.push(chars[index] + chars[index + 1])
+  return grams
+}
+
+/**
+ * 分词。英文按空格切；中文按二字组切——整句当一个词的话，
+ * `dropContained` 判不出重复，`verifyCaptionGrounding` 也判不出覆盖。
+ */
+function wordsOf(value, language = 'en') {
+  const text = normalizePromptText(value)
+  if (language !== 'zh-CN') return text.split(' ').filter(Boolean)
+  const tokens = []
+  for (const chunk of text.split(' ').filter(Boolean)) {
+    let rest = chunk
+    for (const run of chunk.match(CJK_RUN) ?? []) {
+      tokens.push(...bigrams(run))
+      rest = rest.replace(run, ' ')
+    }
+    tokens.push(...rest.split(' ').filter(Boolean))
+  }
+  return tokens
 }
 
 function capitalize(value) {
@@ -139,6 +168,20 @@ function withArticle(phrase) {
   return `${article(first)} ${text}`
 }
 
+/** 中文列举：`A、B和C`。中文不用逗号分隔并列项，用顿号。 */
+function joinListZh(items) {
+  const list = (Array.isArray(items) ? items : []).map((item) => stripTail(item)).filter(Boolean)
+  if (list.length === 0) return ''
+  if (list.length === 1) return list[0]
+  if (list.length === 2) return `${list[0]}和${list[1]}`
+  return `${list.slice(0, -1).join('、')}和${list[list.length - 1]}`
+}
+
+/** 去掉观察值自带的句末标点：模板自己会补一个，留着就变成「……。。」。 */
+function stripTail(value) {
+  return String(value ?? '').trim().replace(/[。．.，,；;！!？?]+$/u, '')
+}
+
 function joinList(items, conjunction = 'and') {
   const list = (Array.isArray(items) ? items : []).map((item) => String(item ?? '').trim()).filter(Boolean)
   if (list.length === 0) return ''
@@ -165,8 +208,42 @@ function bodyPartClause(text, possessive = 'her') {
   return PARTICIPLE.test(verb) ? `${head} is ${rest}.` : `${head} ${rest}.`
 }
 
-function personPhrase(entity) {
+const ZH_NUMERALS = Object.freeze(['零', '一', '两', '三', '四', '五', '六', '七', '八', '九', '十'])
+
+/**
+ * 中文主体短语。
+ *
+ * 中文的实体标签本身就是中文（视觉阶段按 zh-CN 写下来的），所以这里不做词形变换：
+ * 标签已经是「一个女孩」「银发少女」，原样用。只在标签没写人数、而 `count` 说了
+ * 不止一个时补一个数量词——补的是语法，不是内容。
+ */
+function personPhraseZh(entity) {
+  const label = String(entity?.label ?? '').trim()
+  if (label === '') return null
+  const count = Number.isInteger(entity?.count) && entity.count > 0 ? entity.count : 1
+  const numbered = /^(\d+)\s*(.+)$/.exec(label)
+  const total = numbered ? Number(numbered[1]) : count
+  const bare = (numbered ? numbered[2] : label).trim()
+  const startsWithNumeral = /^[零一两二三四五六七八九十]/.test(bare)
+  const phrase = total > 1 && !startsWithNumeral ? `${ZH_NUMERALS[total] ?? total}${bare}` : bare
+  const feminine = /女|妹|姐|妈|婆|娘/.test(bare)
+  const masculine = /男|弟|哥|爸|爹|少年/.test(bare)
+  const plural = total > 1
+  return {
+    phrase,
+    label,
+    noun: bare,
+    total,
+    pronoun: plural ? '她们' : feminine ? '她' : masculine ? '他' : '它',
+    possessive: plural ? '她们的' : feminine ? '她的' : masculine ? '他的' : '它的',
+    plural,
+    entity_id: entity?.entity_id ?? entity?.id ?? null,
+  }
+}
+
+function personPhrase(entity, language = 'en') {
   if (!entity || typeof entity !== 'object') return null
+  if (language === 'zh-CN') return personPhraseZh(entity)
   const label = String(entity.label ?? '').trim()
   const count = Number.isInteger(entity.count) && entity.count > 0 ? entity.count : 1
   const match = /^(?:(\d+)\s*)?(girls?|boys?|women?|men?|persons?|people|figures?|others?)$/i.exec(label)
@@ -218,27 +295,27 @@ function rankFacts(list) {
  * 同一件事说了两遍只留一次：`long hair` 被 `long silver hair` 包含时后者留下。
  * 只看词集合的包含关系，不猜语义；短于两词的不参与，否则 `smile` 会吞掉 `slight smile`。
  */
-function dropContained(list) {
+function dropContained(list, language = 'en') {
   const kept = []
   for (const fact of list) {
-    const words = new Set(wordsOf(fact.text))
+    const words = new Set(wordsOf(fact.text, language))
     if (words.size < 2) {
       kept.push(fact)
       continue
     }
     const swallowed = kept.some((other) => {
-      const otherWords = new Set(wordsOf(other.text))
+      const otherWords = new Set(wordsOf(other.text, language))
       if (otherWords.size <= words.size) return false
       return [...words].every((word) => otherWords.has(word))
     })
     if (!swallowed) kept.push(fact)
   }
   return kept.filter((fact) => {
-    const words = new Set(wordsOf(fact.text))
+    const words = new Set(wordsOf(fact.text, language))
     if (words.size < 2) return true
     return !kept.some((other) => {
       if (other === fact) return false
-      const otherWords = new Set(wordsOf(other.text))
+      const otherWords = new Set(wordsOf(other.text, language))
       if (otherWords.size < words.size) return false
       if (otherWords.size === words.size) return false
       return [...words].every((word) => otherWords.has(word))
@@ -363,7 +440,66 @@ function wordForms(word) {
  * 白名单刻意窄：只有句法词、取景框词、代词、介词、冠词、数词。形容词、颜色、
  * 材质、物体名一律不进去——那些正是幻觉最容易藏身的地方。
  */
-export function verifyCaptionGrounding({ text, facts } = {}) {
+/**
+ * 中文 Caption 的骨架字。
+ *
+ * 中文没有"空格分词"，按词核对会把模板补的每一个虚词都报成幻觉；反过来放宽成
+ * "整句对得上某条事实"又等于不查。所以换一个粒度：**逐字**核对。
+ * 句子里每个汉字，要么出现在这一句自己挂着的 IR 事实里，要么属于下面这组句法字。
+ *
+ * 这组字只承担句子结构（的、了、是、在、里、方面、构图……），不指认任何画面对象：
+ * 颜色、材质、物体名一个都不在里面。所以它不会替模板放行任何补出来的内容。
+ */
+const ZH_SCAFFOLD_CHARS = new Set(
+  [...'的了着和与及是在有里中上下面方面构图镜头角度背景光线风格文字姿态表情主体场景画面张这那一个她们他它穿着为被把都也很非常朝位于'],
+)
+
+/**
+ * 中文接地：按**句子挂着的来源**核对，不按词表。
+ *
+ * 两句硬条件：
+ *   1. 每句都必须挂着 IR 来源（observation / relation / entity_label 的 ref）。
+ *      挂不上来源的句子，无论写得多通顺，都是模板自己编的。
+ *   2. 句子里每个汉字都要么来自本句挂的那几条事实，要么是骨架字。
+ *      这一条挡住了"内容词被偷偷补进去"——补进去的字一定不在本句的事实里。
+ */
+function verifyCaptionGroundingZh({ text, clauses, extraLabels = [] }) {
+  const list = Array.isArray(clauses) && clauses.length > 0
+    ? clauses
+    : String(text ?? '')
+        .split('。')
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .map((part) => ({ text: `${part}。`, tags: [], source_refs: [] }))
+  const labelChars = new Set()
+  for (const label of extraLabels) for (const char of String(label ?? '')) if (/\p{Script=Han}/u.test(char)) labelChars.add(char)
+
+  const unsupported = []
+  let checked = 0
+  for (const clause of list) {
+    const body = String(clause?.text ?? '')
+    if (body === '') continue
+    const refs = Array.isArray(clause?.source_refs) ? clause.source_refs : []
+    const tags = Array.isArray(clause?.tags) ? clause.tags : []
+    if (refs.length === 0 && tags.length === 0) {
+      unsupported.push(body)
+      continue
+    }
+    const allowed = new Set(labelChars)
+    for (const tag of tags) for (const char of String(tag ?? '')) if (/\p{Script=Han}/u.test(char)) allowed.add(char)
+    for (const char of body) {
+      if (!/\p{Script=Han}/u.test(char)) continue
+      checked += 1
+      if (allowed.has(char)) continue
+      if (ZH_SCAFFOLD_CHARS.has(char)) continue
+      if (!unsupported.includes(char)) unsupported.push(char)
+    }
+  }
+  return { ok: unsupported.length === 0, basis: 'clause_sources', unsupported, checked_words: checked }
+}
+
+export function verifyCaptionGrounding({ text, facts, clauses = null, language = 'en', extraLabels = [] } = {}) {
+  if (language === 'zh-CN') return verifyCaptionGroundingZh({ text, clauses, extraLabels })
   const factWords = new Set()
   const factForms = new Set()
   for (const fact of Array.isArray(facts) ? facts : []) {
@@ -386,6 +522,29 @@ export function verifyCaptionGrounding({ text, facts } = {}) {
 }
 
 /**
+ * 编不出 Caption 时的返回。
+ *
+ * 与"空 Caption 但结构完整"是同一件事：register 仍是 caption，text 是空串，
+ * 调用方看 `ok` 就知道这次没结果。不退回标签流——那会让 MOSS 拿到一串它读不懂的词。
+ */
+function emptyCaption({ profile, language, facts, diagnostics }) {
+  return {
+    schema_version: MOSS_SCHEMA_VERSION,
+    register: MOSS_REGISTER,
+    profile: profile?.config_id ?? null,
+    language,
+    ok: false,
+    text: '',
+    clauses: [],
+    facts_used: [],
+    facts_dropped: Array.isArray(facts) ? facts : [],
+    grounding: { ok: false, basis: 'ir_facts', unsupported: [], checked_words: 0 },
+    stats: { facts: 0, used: 0, dropped: 0, sentences: 0, clauses: 0, chars: 0 },
+    diagnostics,
+  }
+}
+
+/**
  * 把 IR 事实编译成一段 MOSS Caption。
  *
  * @param {object} options
@@ -399,33 +558,44 @@ export function verifyCaptionGrounding({ text, facts } = {}) {
 export function composeMossCaption({ ir = null, profile = {}, facts = [], detailLevel = null, character = null, language = null } = {}) {
   const diagnostics = []
   const budget = detailBudget(detailLevel)
-  const wantedLanguage = String(language ?? profile?.tag_standard?.caption_language ?? 'en').trim() || 'en'
+  const rawLanguage = String(language ?? profile?.tag_standard?.caption_language ?? DEFAULT_CAPTION_LANGUAGE).trim() || DEFAULT_CAPTION_LANGUAGE
+  const wantedLanguage = normalizeCaptionLanguage(rawLanguage)
 
-  if (!MOSS_CAPTION_LANGUAGES.includes(wantedLanguage)) {
+  if (wantedLanguage === null) {
     diagnostics.push(
       diagnostic({
         error_code: MOSS_CODES.CAPTION_LANGUAGE_UNSUPPORTED,
         severity: SEVERITY.ERROR,
         field_path: '/tag_standard/caption_language',
-        message: `Caption 只有英语可用，请求的语言是 ${wantedLanguage}。`,
-        suggested_fix:
-          'IR 的观察值全是英语，本地也没有中英对照资源；要出中文只能再加一次翻译调用，那是本插件明确不做的。把 caption_language 设回 en。',
+        message: `Caption 只支持 en / zh-CN，收到 ${JSON.stringify(rawLanguage)}。`,
+        suggested_fix: '把 caption_language 改成 en 或 zh-CN。这个值在视觉分析开始前就要定，改完要重新分析那张图。',
       }),
     )
-    return {
-      schema_version: MOSS_SCHEMA_VERSION,
-      register: MOSS_REGISTER,
-      profile: profile?.config_id ?? null,
-      language: wantedLanguage,
-      ok: false,
-      text: '',
-      clauses: [],
-      facts_used: [],
-      facts_dropped: Array.isArray(facts) ? facts : [],
-      grounding: { ok: false, basis: 'ir_facts', unsupported: [], checked_words: 0 },
-      stats: { facts: 0, used: 0, dropped: 0, sentences: 0, clauses: 0, chars: 0 },
-      diagnostics,
-    }
+    return emptyCaption({ profile, language: rawLanguage, facts, diagnostics })
+  }
+
+  const zh = wantedLanguage === 'zh-CN'
+  const irLanguage = String(ir?.observation_language ?? 'en')
+  // 语言对不上就明确失败，不翻译、不补写。
+  //
+  // 中文 Caption 的前提是 IR 的观察值本来就是中文——那是视觉阶段按 zh-CN 直接写下来的。
+  // 拿一份英语 IR 要中文，唯一可行的办法是翻译，而翻译出来的句子回指不到任何一条观察，
+  // 正是这个档案最不该交的东西。反过来（中文 IR 要英文）同样没有英文事实可用。
+  if (zh !== (irLanguage === 'zh-CN')) {
+    diagnostics.push(
+      diagnostic({
+        error_code: MOSS_CODES.CAPTION_LANGUAGE_EMPTY,
+        severity: SEVERITY.ERROR,
+        field_path: '/caption_language',
+        message: zh
+          ? `要中文 Caption，但这份 IR 的观察值是${irLanguage === 'en' ? '英文' : irLanguage}：里面一条中文事实都没有，写不出中文句子。`
+          : `要英文 Caption，但这份 IR 的观察值是${irLanguage}：里面没有可用的英文事实。`,
+        suggested_fix: zh
+          ? '用 caption_language=zh-CN 重新分析这张图。语言必须在分析开始前定下来，事后改语言只能重跑——本插件不会把英文 Caption 翻译成中文。'
+          : '把 caption_language 设回 zh-CN，或重新用 en 分析这张图。',
+      }),
+    )
+    return emptyCaption({ profile, language: wantedLanguage, facts, diagnostics })
   }
 
   const pool = (Array.isArray(facts) ? facts : [])
@@ -463,9 +633,9 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
 
   const persons = (Array.isArray(ir?.entities) ? ir.entities : []).filter((entity) => entity?.kind === 'person')
   const primary = rankFacts(persons.map((entity) => ({ text: '', importance: entity?.importance ?? 0, entity })))[0]?.entity ?? persons[0] ?? null
-  const subject = personPhrase(primary)
-  const possessive = subject?.possessive ?? 'their'
-  const pronoun = subject?.pronoun ?? 'they'
+  const subject = personPhrase(primary, wantedLanguage)
+  const possessive = subject?.possessive ?? (zh ? '她的' : 'their')
+  const pronoun = subject?.pronoun ?? (zh ? '她' : 'they')
 
   const pick = (category) => {
     const list = rankFacts(byCategory.get(category) ?? [])
@@ -473,7 +643,7 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
     const scoped = subject?.entity_id
       ? list.filter((fact) => !fact.entity_id || fact.entity_id === subject.entity_id)
       : list
-    return dropContained(scoped).slice(0, budget.perSection)
+    return dropContained(scoped, wantedLanguage).slice(0, budget.perSection)
   }
 
   // ① 整体画面与主体
@@ -506,53 +676,85 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
     ? [{ kind: 'entity_label', entity_id: subject.entity_id, entity_kind: 'person' }]
     : []
   if (lead) {
-    // `with ...` 直接挂在名词后面，不加逗号：`a girl, with silver hair` 会把外观写成插入语，
-    // 读起来像另一个人。服装另起一段才用逗号。
-    const bits = []
-    if (appearance.length > 0) bits.push(`with ${joinList(appearance.map((fact) => fact.text))}`)
-    if (clothing.length > 0) bits.push(`wearing ${joinList(clothing.map((fact) => withArticle(fact.text)))}`)
-    const head = bits.length > 0 ? `${lead} ${bits[0]}` : lead
-    const tail = bits.slice(1).join(', ')
-    take(
-      'subject',
-      `The image shows ${head}${tail.length > 0 ? `, ${tail}` : ''}.`,
-      [...appearance, ...clothing, ...subjectFacts],
-      subjectRefs,
-    )
+    if (zh) {
+      // 中文不补冠词，也不加 `with`：外观与服装用「有着」「穿着」并进同一句。
+      // 不写成「画面中少女」——那不是句子，是标签换了标点。
+      const bits = []
+      if (appearance.length > 0) bits.push(`有着${joinListZh(appearance.map((fact) => fact.text))}`)
+      if (clothing.length > 0) bits.push(`穿着${joinListZh(clothing.map((fact) => fact.text))}`)
+      take(
+        'subject',
+        `画面中的主体是${lead}${bits.length > 0 ? `，${bits.join('，')}` : ''}。`,
+        [...appearance, ...clothing, ...subjectFacts],
+        subjectRefs,
+      )
+    } else {
+      // `with ...` 直接挂在名词后面，不加逗号：`a girl, with silver hair` 会把外观写成插入语，
+      // 读起来像另一个人。服装另起一段才用逗号。
+      const bits = []
+      if (appearance.length > 0) bits.push(`with ${joinList(appearance.map((fact) => fact.text))}`)
+      if (clothing.length > 0) bits.push(`wearing ${joinList(clothing.map((fact) => withArticle(fact.text)))}`)
+      const head = bits.length > 0 ? `${lead} ${bits[0]}` : lead
+      const tail = bits.slice(1).join(', ')
+      take(
+        'subject',
+        `The image shows ${head}${tail.length > 0 ? `, ${tail}` : ''}.`,
+        [...appearance, ...clothing, ...subjectFacts],
+        subjectRefs,
+      )
+    }
   } else {
     const firstEntity = (Array.isArray(ir?.entities) ? ir.entities : [])[0] ?? null
-    const label = typeof firstEntity?.label === 'string' ? withArticle(firstEntity.label) : ''
+    const label = typeof firstEntity?.label === 'string' ? (zh ? firstEntity.label : withArticle(firstEntity.label)) : ''
     const backdrop = pick('background')[0] ?? null
-    if (label) take('subject', `The image shows ${label}.`, [], subjectRefs)
-    else if (backdrop) take('subject', `The image shows ${withArticle(backdrop.text)}.`, [backdrop])
+    if (label) take('subject', zh ? `画面中${label}。` : `The image shows ${label}.`, [], subjectRefs)
+    else if (backdrop) take('subject', zh ? `画面中${backdrop.text}。` : `The image shows ${withArticle(backdrop.text)}.`, [backdrop])
   }
 
   // ② 表情（跟主体同句太挤，单独一句）
   const expression = pick('expression')
   if (expression.length > 0 && (subject || lead)) {
-    take('expression', `${capitalize(pronoun)} has ${joinList(expression.map((fact) => withArticle(fact.text)))}.`, expression)
+    take(
+      'expression',
+      zh
+        ? `${pronoun}的表情是${joinListZh(expression.map((fact) => fact.text))}。`
+        : `${capitalize(pronoun)} has ${joinList(expression.map((fact) => withArticle(fact.text)))}.`,
+      expression,
+    )
   }
 
   // ③ 姿态与动作
   const pose = pick('pose_action').filter((fact) => !fact.relation_id)
-  for (const fact of pose) {
-    const value = fact.text
-    if (GERUND_START.test(value)) {
-      take('pose_action', `${capitalize(pronoun)} is ${value}.`, [fact])
-      continue
+  if (zh) {
+    // 中文不逐条起句：三条姿态各起一句「姿态方面，……」读起来是清单，不是描述。
+    // 合成一句、用逗号推进，才像人在说画面。
+    const values = pose.map((fact) => stripTail(fact.text)).filter(Boolean)
+    if (values.length > 0) take('pose_action', `${pronoun}${values.join('，')}。`, pose)
+  } else {
+    for (const fact of pose) {
+      const value = fact.text
+      if (GERUND_START.test(value)) {
+        take('pose_action', `${capitalize(pronoun)} is ${value}.`, [fact])
+        continue
+      }
+      const clause = bodyPartClause(value, possessive)
+      if (clause) {
+        take('pose_action', clause, [fact])
+        continue
+      }
+      take('pose_action', `The pose is ${value}.`, [fact])
     }
-    const clause = bodyPartClause(value, possessive)
-    if (clause) {
-      take('pose_action', clause, [fact])
-      continue
-    }
-    take('pose_action', `The pose is ${value}.`, [fact])
   }
 
   // ④ 空间关系：谁握着什么、谁在谁身后。关系描述本身就是一句完整的话，别拆成两个名词。
   const relations = rankFacts(pool.filter((fact) => fact.relation_id)).slice(0, budget.perSection)
   for (const fact of relations) {
-    const value = fact.text
+    const value = zh ? stripTail(fact.text) : fact.text
+    if (zh) {
+      // 关系描述本身已经是完整动作（「右手握着伞柄」），补主语才成句。
+      take('relation', `${pronoun}${value}。`, [fact])
+      continue
+    }
     const clause = bodyPartClause(value, possessive)
     if (clause) {
       take('relation', clause, [fact])
@@ -570,47 +772,81 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
   // 用 and 串起来会变成「一个上半身和一个肖像」。连写再补一次冠词才读得通。
   const framing = pick('composition')
   if (framing.length > 0) {
-    const phrase = withArticle(framing.map((fact) => fact.text).join(' '))
-    take('composition', `The framing is ${phrase}.`, framing)
+    if (zh) {
+      take('composition', `构图是${joinListZh(framing.map((fact) => fact.text))}。`, framing)
+    } else {
+      const phrase = withArticle(framing.map((fact) => fact.text).join(' '))
+      take('composition', `The framing is ${phrase}.`, framing)
+    }
   }
   const camera = pick('camera')
   if (camera.length > 0) {
-    take('camera', `The camera angle is ${joinList(camera.map((fact) => fact.text))}.`, camera)
+    take(
+      'camera',
+      zh
+        ? `镜头角度是${joinListZh(camera.map((fact) => fact.text))}。`
+        : `The camera angle is ${joinList(camera.map((fact) => fact.text))}.`,
+      camera,
+    )
   }
 
   // ⑥ 环境
   const background = pick('background')
   if (background.length > 0) {
-    take('background', `The background is ${joinList(background.map((fact) => withArticle(fact.text)))}.`, background)
+    take(
+      'background',
+      zh
+        ? `背景是${joinListZh(background.map((fact) => fact.text))}。`
+        : `The background is ${joinList(background.map((fact) => withArticle(fact.text)))}.`,
+      background,
+    )
   }
 
   // ⑦ 光照与色彩：写成「被什么光照亮」而不是「光照是 overcast daylight」——
   // 后者是标签换个说法，前者才是描述。
   const lighting = pick('lighting_color')
   if (lighting.length > 0) {
-    take('lighting', `The scene is lit by ${joinList(lighting.map((fact) => fact.text))}.`, lighting)
+    take(
+      'lighting',
+      zh
+        ? `光线是${joinListZh(lighting.map((fact) => fact.text))}。`
+        : `The scene is lit by ${joinList(lighting.map((fact) => fact.text))}.`,
+      lighting,
+    )
   }
 
   // ⑧ 风格：质量词与评级词不进 Caption——它们不描述画面，只描述"这张图有多好"。
   if (budget.style) {
     const style = pick('quality_style').filter((fact) => !QUALITY_WORD.test(fact.text) && !RATING_WORD.test(fact.text))
     if (style.length > 0) {
-      take('style', `The style is ${joinList(style.map((fact) => fact.text))}.`, style)
+      take(
+        'style',
+        zh
+          ? `风格是${joinListZh(style.map((fact) => fact.text))}。`
+          : `The style is ${joinList(style.map((fact) => fact.text))}.`,
+        style,
+      )
     }
   }
 
   // ⑨ 画面文字：逐字保留原语言。
   if (budget.text) {
     for (const entry of collectImageText(ir).slice(0, budget.perSection)) {
-      take('text', `The image contains the text "${entry.value}".`, entry.facts)
+      take('text', zh ? `画面里有文字「${entry.value}」。` : `The image contains the text "${entry.value}".`, entry.facts)
     }
   }
 
-  const text = sentences.join(' ')
+  const text = sentences.join(zh ? '' : ' ')
   // 主体短语本身也是依据：`1girl` 是 IR 的计数标签，写成 `a girl` 只换了词形，
   // 不算补内容。把 lead 一并交给核对，免得每个 Caption 都挂一条假警报。
   const groundingFacts = lead ? [...used, { text: lead }] : used
-  const grounding = verifyCaptionGrounding({ text, facts: groundingFacts })
+  const grounding = verifyCaptionGrounding({
+    text,
+    facts: groundingFacts,
+    clauses,
+    language: wantedLanguage,
+    extraLabels: lead ? [lead] : [],
+  })
   const dropped = pool.filter((fact) => !used.includes(fact))
   const ok = text.length > 0
 
@@ -632,8 +868,8 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
       diagnostic({
         error_code: MOSS_CODES.CAPTION_UNGROUNDED,
         severity: SEVERITY.INFO,
-        message: `Caption 里有 ${grounding.unsupported.length} 个词不在任何 IR 事实里（${grounding.unsupported.slice(0, 12).join(', ')}）。`,
-        suggested_fix: '若这些词是内容词，说明模板补了画面里没有的东西；若是语法骨架，把它加进 CAPTION_SCAFFOLDING。',
+        message: `Caption 里有 ${grounding.unsupported.length} 处内容对不上它的 IR 来源（${grounding.unsupported.slice(0, 12).join(' / ')}）。`,
+        suggested_fix: '若这些是内容词，说明模板补了画面里没有的东西；若是语法骨架，把它加进对应的骨架表。',
       }),
     )
   }

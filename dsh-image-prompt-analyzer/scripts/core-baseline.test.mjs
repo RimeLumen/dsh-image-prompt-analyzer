@@ -18,6 +18,13 @@ import { registerAllTools } from '../lib/tools/index.js'
 import { compilePrompt } from '../lib/compile/index.js'
 import { explainFact } from '../lib/trace/ledger.js'
 import { MOSS_CODES, MOSS_NEGATIVE_BASE, composeMossCaption, verifyCaptionGrounding } from '../lib/compile/moss.js'
+import { collectDescriptionFacts } from '../lib/compile/describe.js'
+import { isNegatedObservation, isPlaceholderObservation } from '../lib/compile/terms.js'
+import { createIR } from '../lib/ir/build.js'
+import { CAPTION_LANGUAGES, DEFAULT_CAPTION_LANGUAGE, normalizeCaptionLanguage } from '../lib/model-profile/schema.js'
+import { resolveObservationLanguage } from '../lib/pipeline/language.js'
+import { runAnalyzePipeline } from '../lib/pipeline/analyze.js'
+import { buildStageAPrompt, buildStageASystem, buildStageBPrompt, buildStageBSystem } from '../lib/vision/prompt.js'
 import {
   MOSS_BBOX_COORD_SPACES,
   MOSS_BBOX_FORMATS,
@@ -127,6 +134,7 @@ const CORE_TOOL_PROPERTIES = {
     'include_ir',
     'save_experience',
     'layout',
+    'caption_language',
   ],
   validate_configs: ['config_id', 'strict_mode'],
   diagnose_knowledge_base: ['source_id'],
@@ -172,7 +180,9 @@ const CORE_TOOL_SCHEMA_SHA256 = {
   // caption 与示例档案名 moss。属性名、枚举、required 依旧未动。
   // 2026-11-09 第三阶段有意更新：analyze_image_prompt 增加 layout 参数（可选，
   // 只对 caption 档生效），工具描述补上 prompt_format 的说明。
-  analyze_image_prompt: 'fd019719b80be488fb9f94cae8740dc4ef4fd4a7a56d12758340934e0b531781',
+  // 2026-11-10 有意更新：增加 caption_language 参数（en / zh-CN，只对 caption 档生效），
+  // 描述里补一句「中文由视觉阶段直接产出、改语言要重新分析」。其余参数未动。
+  analyze_image_prompt: '39c18403780eca443e509d4bb7d1fd3d733fff06422c31a2bb4ba4c136ddc033',
   validate_configs: 'c288b8347979e39b2eb3083e661c81f2e2555e3bfac948a13bc2834be17c2801',
   diagnose_knowledge_base: 'e366cbd5fddf761a42b34d27b790d867e8f2405b0523c92eeaae536427844682',
   rebuild_knowledge_base: '562b673a7a02ee57c03e7ac880d186e3f9ccb80ce3033ae560abac6ffecba6d3',
@@ -5501,15 +5511,32 @@ test('caption 模式不再计算成分句，tag 模式仍然计算', async () =>
   }
 })
 
-test('中文 Caption 明确报不支持，不会偷偷产出半英文半中文的文本', async () => {
+test('语言写法归一：zh 与 zh-CN 是同一件事，认不出的写法一律拒', async () => {
   const { moss, dataDir } = await loadMossProfile()
   try {
     const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
-    const out = await composeMossCaption({ ir, profile: moss.config, facts: null, language: 'zh' })
-    assert.equal(out.ok, false)
-    assert.equal(out.text, '')
-    assert.equal(out.language, 'zh')
-    const failure = out.diagnostics.find((item) => item.error_code === MOSS_CODES.CAPTION_LANGUAGE_UNSUPPORTED)
+    // 归一化本身不产出文本：这份 IR 是英语的，要中文只能重新分析，所以这里必然失败，
+    // 但失败原因必须是「IR 里没有中文事实」，而不是「zh 这个写法不认」。
+    for (const raw of ['zh', 'zh-CN', 'zh_hans', 'cn']) {
+      const out = await composeMossCaption({ ir, profile: moss.config, facts: null, language: raw })
+      assert.equal(out.language, 'zh-CN', `${raw} 应该归一成 zh-CN`)
+      assert.equal(out.ok, false)
+      assert.equal(out.text, '')
+      assert.ok(
+        out.diagnostics.some((item) => item.error_code === MOSS_CODES.CAPTION_LANGUAGE_EMPTY),
+        `${raw} 缺少 CAPTION_LANGUAGE_EMPTY`,
+      )
+      assert.ok(
+        !out.diagnostics.some((item) => item.error_code === MOSS_CODES.CAPTION_LANGUAGE_UNSUPPORTED),
+        `${raw} 不该被当成不支持的语言`,
+      )
+    }
+
+    // 认不出的写法不猜，直接拒。
+    const bogus = await composeMossCaption({ ir, profile: moss.config, facts: null, language: 'fr' })
+    assert.equal(bogus.ok, false)
+    assert.equal(bogus.text, '')
+    const failure = bogus.diagnostics.find((item) => item.error_code === MOSS_CODES.CAPTION_LANGUAGE_UNSUPPORTED)
     assert.ok(failure, '缺少 CAPTION_LANGUAGE_UNSUPPORTED')
     assert.equal(failure.severity, 'error')
   } finally {
@@ -5517,18 +5544,29 @@ test('中文 Caption 明确报不支持，不会偷偷产出半英文半中文�
   }
 })
 
-test('moss 档案只声明支持英语，其它语言在配置校验里就被拒', async () => {
+test('moss 档案声明支持 en 与 zh-CN，其它语言在配置校验里就被拒', async () => {
   const { moss, dataDir } = await loadMossProfile()
   try {
     assert.equal(moss.config.tag_standard.caption_language, 'en')
 
-    const broken = JSON.parse(JSON.stringify(moss.config))
-    broken.tag_standard.caption_language = 'zh'
     const { validateModelProfile } = await import('../lib/model-profile/validate.js')
+
+    // 旧写法 `zh` 是合法别名，不该再被拦。
+    const alias = JSON.parse(JSON.stringify(moss.config))
+    alias.tag_standard.caption_language = 'zh'
+    const aliasResult = validateModelProfile(alias, { configFile: 'moss.json' })
+    assert.equal(
+      aliasResult.diagnostics.filter((item) => item.error_code === 'TAG_STANDARD_CAPTION_LANGUAGE_UNSUPPORTED').length,
+      0,
+      `zh 是 zh-CN 的别名，不该报不支持：${aliasResult.diagnostics.map((item) => item.error_code).join(', ')}`,
+    )
+
+    const broken = JSON.parse(JSON.stringify(moss.config))
+    broken.tag_standard.caption_language = 'fr'
     const result = validateModelProfile(broken, { configFile: 'moss.json' })
     assert.equal(result.ok, false)
     const hit = result.diagnostics.find((item) => item.error_code === 'TAG_STANDARD_CAPTION_LANGUAGE_UNSUPPORTED')
-    assert.ok(hit, `没有拦住 caption_language=zh：${result.diagnostics.map((item) => item.error_code).join(', ')}`)
+    assert.ok(hit, `没有拦住 caption_language=fr：${result.diagnostics.map((item) => item.error_code).join(', ')}`)
   } finally {
     rmSync(dataDir, { recursive: true, force: true })
   }
@@ -6210,4 +6248,389 @@ test('UI 工作流没有改写节点时明说没有，不猜接线', () => {
   assert.deepEqual(result.diagnostics, [])
   assert.deepEqual(result.chains, [])
   assert.ok(result.note.includes('只按节点类型扫描'))
+})
+
+// ── 中文 Caption ─────────────────────────────────────────────────────────────
+//
+// 这一组钉的是「中文不是翻译出来的」：语言一路推到视觉阶段，IR 自己记着观察语言，
+// 编译阶段只在语言对得上时组句，对不上就明确失败。
+
+test('语言写法归一：en / zh-CN 认得出别名，其余一律不猜', () => {
+  assert.deepEqual([...CAPTION_LANGUAGES], ['en', 'zh-CN'])
+  assert.equal(DEFAULT_CAPTION_LANGUAGE, 'en')
+
+  for (const raw of ['en', 'EN', 'en-US', 'english']) assert.equal(normalizeCaptionLanguage(raw), 'en')
+  for (const raw of ['zh', 'zh-CN', 'zh_hans', 'zh-Hans', 'CN', 'chinese']) assert.equal(normalizeCaptionLanguage(raw), 'zh-CN')
+  for (const raw of ['', '  ', null, undefined, 'fr', 'ja', 'zh-TW']) assert.equal(normalizeCaptionLanguage(raw), null)
+})
+
+test('createIR 记下观察语言，不传就是英文', () => {
+  const image = { width: 8, height: 8 }
+  assert.equal(createIR({ taskId: 't1', image }).observation_language, 'en')
+  assert.equal(createIR({ taskId: 't2', image, observationLanguage: 'zh-CN' }).observation_language, 'zh-CN')
+  // 认不出的值不写进 IR：IR 里只有两种语言，含糊的值一律按英文处理。
+  assert.equal(createIR({ taskId: 't3', image, observationLanguage: 'fr' }).observation_language, 'en')
+})
+
+test('语言优先级：任务参数 > 档案 > 默认，非 Caption 档要中文只给提示不报错', async () => {
+  const { store, dataDir } = await loadMossProfile()
+  try {
+    const moss = store.getModelProfile('moss').config
+    const illustrious = store.getModelProfile('illustrious').config
+
+    const fromProfile = resolveObservationLanguage({ profile: moss })
+    assert.equal(fromProfile.language, 'en')
+    assert.equal(fromProfile.source, 'profile')
+    assert.equal(fromProfile.ok, true)
+
+    const fromTask = resolveObservationLanguage({ profile: moss, requested: 'zh-CN' })
+    assert.equal(fromTask.language, 'zh-CN')
+    assert.equal(fromTask.source, 'task_argument')
+    assert.deepEqual(fromTask.diagnostics, [])
+
+    const alias = resolveObservationLanguage({ profile: moss, requested: 'zh' })
+    assert.equal(alias.language, 'zh-CN')
+
+    // 标签档：中文 Caption 这件事对它没有意义，但也不能因此让整次分析失败。
+    const ignored = resolveObservationLanguage({ profile: illustrious, requested: 'zh-CN' })
+    assert.equal(ignored.language, 'en')
+    assert.equal(ignored.ok, true)
+    const warn = ignored.diagnostics.find((item) => item.error_code === 'CAPTION_LANGUAGE_IGNORED')
+    assert.ok(warn, '非 Caption 档要中文应当给一条 CAPTION_LANGUAGE_IGNORED')
+    assert.equal(warn.severity, 'warning')
+
+    const bogus = resolveObservationLanguage({ profile: moss, requested: 'fr' })
+    assert.equal(bogus.ok, false)
+    const failure = bogus.diagnostics.find((item) => item.error_code === 'CAPTION_LANGUAGE_UNSUPPORTED')
+    assert.ok(failure, '认不出的语言应当报 CAPTION_LANGUAGE_UNSUPPORTED')
+    assert.equal(failure.severity, 'error')
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('Stage A/B 的提示词随观察语言切换，英文默认值逐字不变', () => {
+  // 英文是既有行为：不传参数必须和传 en 完全一样。
+  assert.equal(buildStageASystem(), buildStageASystem({ observationLanguage: 'en' }))
+  assert.equal(buildStageBSystem(), buildStageBSystem({ observationLanguage: 'en' }))
+
+  const zhA = buildStageASystem({ observationLanguage: 'zh-CN' })
+  assert.match(zhA, /value 用中文写/)
+  // 画面里的文字逐字抄，不翻译——这是中文模式最容易做错的一条。
+  assert.match(zhA, /营业中 OPEN 24H/)
+  assert.equal(/value 一律用英文/.test(zhA), false)
+
+  const zhB = buildStageBSystem({ observationLanguage: 'zh-CN' })
+  assert.match(zhB, /value 用中文写/)
+
+  const promptA = buildStageAPrompt({
+    image: { width: 832, height: 1216, aspect_ratio: '0.684' },
+    observationLanguage: 'zh-CN',
+  })
+  assert.match(promptA, /"三分法构图/)
+
+  const promptB = buildStageBPrompt({ cropId: 'crop_1', observationLanguage: 'zh-CN' })
+  assert.match(promptB, /"眼镜"/)
+
+  // 英文提示词里不该出现中文示例值。
+  const promptAEn = buildStageAPrompt({ image: { width: 832, height: 1216, aspect_ratio: '0.684' } })
+  assert.equal(/三分法构图/.test(promptAEn), false)
+})
+
+test('中文否定式与占位符被认出来，不会被当成画面内容写进 Caption', () => {
+  for (const value of ['画面里没有人群', '没有剑', '看不到行人', '背景被裁掉', '招牌不可见']) {
+    assert.equal(isNegatedObservation(value), true, `${value} 应当被判为否定式`)
+  }
+  assert.equal(isNegatedObservation('远处的街道'), false)
+  assert.equal(isNegatedObservation('空旷的广场'), false)
+
+  for (const value of ['未知', '看不清', '无法判断']) assert.equal(isPlaceholderObservation(value), true)
+  assert.equal(isPlaceholderObservation('银色的头发'), false)
+})
+
+test('中文 IR 写得出中文 Caption，画面文字逐字保留不翻译', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir-zh.json')
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null, captionLanguage: 'zh-CN' })
+    const text = out.prompts.positive
+
+    assert.equal(out.caption.language, 'zh-CN')
+    assert.equal(out.caption.ok, true)
+    assert.equal(out.caption.grounding.ok, true)
+    // 按句子挂的来源核对，不是按词表核对。
+    assert.equal(out.caption.grounding.basis, 'clause_sources')
+
+    assert.match(text, /画面中的主体是少女/)
+    assert.match(text, /银色长发/)
+    assert.match(text, /白色衬衫/)
+    // 招牌文字是画面内容，原样带出去。
+    assert.match(text, /营业中 OPEN 24H/)
+    // 否定式观察不进 Caption：写进去等于让模型把人群画出来。
+    assert.equal(text.includes('没有人群'), false)
+    // 中文句子之间不加空格。
+    assert.equal(/[。] /.test(text), false)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('英文 IR 要中文 Caption 直接失败，不翻译、不补写', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null, captionLanguage: 'zh-CN' })
+
+    assert.equal(out.caption.ok, false)
+    assert.equal(out.caption.text, '')
+    const failure = out.diagnostics.find((item) => item.error_code === MOSS_CODES.CAPTION_LANGUAGE_EMPTY)
+    assert.ok(failure, '英文 IR 出中文应当报 CAPTION_LANGUAGE_EMPTY')
+    assert.equal(failure.severity, 'error')
+    assert.match(failure.suggested_fix, /重新分析/)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('中文 IR 要英文 Caption 同样失败：两个方向都没有事实可用', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = readJson('scripts/fixtures/promptlens/baseline-ir-zh.json')
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null, captionLanguage: 'en' })
+    assert.equal(out.caption.ok, false)
+    assert.equal(out.caption.text, '')
+    assert.ok(out.diagnostics.some((item) => item.error_code === MOSS_CODES.CAPTION_LANGUAGE_EMPTY))
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('中文接地按句子来源核对：没挂来源的句子不算数，补出来的内容词会被点出来', () => {
+  const grounded = verifyCaptionGrounding({
+    text: '画面中的主体是少女，有着银色长发。',
+    clauses: [{ text: '画面中的主体是少女，有着银色长发。', tags: ['银色长发'], source_refs: [{ kind: 'entity_label', entity_id: 'ent_1' }] }],
+    language: 'zh-CN',
+    extraLabels: ['少女'],
+  })
+  assert.equal(grounded.ok, true)
+  assert.equal(grounded.basis, 'clause_sources')
+  assert.ok(grounded.checked_words > 0, '应当真的逐字核对过，而不是空跑')
+
+  // 句子挂不上任何 IR 来源：整句不算数，无论它读起来多通顺。
+  const orphan = verifyCaptionGrounding({
+    text: '远处有一座钟楼。',
+    clauses: [{ text: '远处有一座钟楼。', tags: [], source_refs: [] }],
+    language: 'zh-CN',
+  })
+  assert.equal(orphan.ok, false)
+  assert.deepEqual(orphan.unsupported, ['远处有一座钟楼。'])
+
+  // 句子挂着来源，但里面混进了来源里没有的内容词。
+  const invented = verifyCaptionGrounding({
+    text: '画面中的主体是少女，穿着红色裙子。',
+    clauses: [
+      {
+        text: '画面中的主体是少女，穿着红色裙子。',
+        tags: ['白色衬衫'],
+        source_refs: [{ kind: 'entity_feature', entity_id: 'ent_1' }],
+      },
+    ],
+    language: 'zh-CN',
+    extraLabels: ['少女'],
+  })
+  assert.equal(invented.ok, false)
+  assert.ok(invented.unsupported.includes('裙'), `应当点出「裙」：${invented.unsupported.join('')}`)
+})
+
+test('Layout 中文：只有 caption 换语言，label / bbox / text / 坐标一个字都不动', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const en = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const zh = readJson('scripts/fixtures/promptlens/baseline-ir-zh.json')
+    const layoutArg = { coord_space: 'abs', bbox_format: 'xyxy' }
+
+    const enOut = await compilePrompt({ ir: en, profile: moss.config, kb: null, layout: layoutArg })
+    const zhOut = await compilePrompt({ ir: zh, profile: moss.config, kb: null, layout: layoutArg, captionLanguage: 'zh-CN' })
+
+    const zhItems = zhOut.layout.json.items
+    // label 直接来自 IR 的实体标签：中文 IR 里它本来就是中文，这里不做任何翻译。
+    const labels = zh.entities.map((entity) => entity.label)
+    assert.deepEqual(
+      zhItems.filter((item) => item.label !== 'text').map((item) => item.label),
+      labels,
+    )
+    // bbox 与 IR 里的 region 对得上，与语言无关。
+    assert.deepEqual(zhItems[0].bbox, toPixelBox(zh.entities[0].region, 832, 1216))
+    for (const item of zhItems) {
+      assert.equal(typeof item.caption, 'string')
+      assert.ok(item.caption.length > 0)
+      // 描述串用中文标点分隔，不是英文逗号。
+      assert.equal(item.caption.includes(', '), false)
+    }
+    // 文字条：text 逐字保留，caption 用中文说「画面文字」。
+    const zhTextItem = zhItems.find((item) => item.label === 'text')
+    assert.ok(zhTextItem, '中文 IR 里的招牌文字应当进 Layout')
+    assert.equal(zhTextItem.text, '营业中 OPEN 24H')
+    assert.match(zhTextItem.caption, /画面文字「营业中 OPEN 24H」/)
+
+    // 画布与坐标格式不变。
+    assert.deepEqual(zhOut.layout.json.canvas, enOut.layout.json.canvas)
+    assert.deepEqual(zhOut.layout.json.meta, enOut.layout.json.meta)
+    // summary.caption 就是 Caption 正文，跟着语言走；有 Layout 时正稿是 Layout JSON，
+    // 正文留在 caption.text 里。
+    assert.equal(zhOut.layout.json.summary.caption, zhOut.caption.text)
+    assert.match(zhOut.layout.json.summary.caption, /画面中的主体是少女/)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('中文 Caption 不影响负向提示词：负向与语言无关', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const en = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const zh = readJson('scripts/fixtures/promptlens/baseline-ir-zh.json')
+    const enOut = await compilePrompt({ ir: en, profile: moss.config, kb: null })
+    const zhOut = await compilePrompt({ ir: zh, profile: moss.config, kb: null, captionLanguage: 'zh-CN' })
+    assert.equal(zhOut.prompts.negative, enOut.prompts.negative)
+    assert.deepEqual(zhOut.caption.negative.terms, enOut.caption.negative.terms)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('中文观察值进事实池：collectDescriptionFacts 不再按 CJK 拒收', () => {
+  const zh = readJson('scripts/fixtures/promptlens/baseline-ir-zh.json')
+  const zhFacts = collectDescriptionFacts(zh, { language: 'zh-CN' })
+  assert.equal(zhFacts.language, 'zh-CN')
+  assert.ok(zhFacts.facts.some((fact) => fact.text === '银色长发'))
+
+  // 同一份中文 IR 按英文口径收集，中文观察会被当成 non_english 剔掉——这正是旧行为，
+  // 保留它是为了说明：语言必须显式传进来，不能靠猜。
+  const enFacts = collectDescriptionFacts(zh, { language: 'en' })
+  assert.equal(enFacts.facts.some((fact) => fact.text === '银色长发'), false)
+})
+test('中文观察下不拼英文复合标签：holding_黑伞 这种缝合词不该出现', async () => {
+  const { store, dataDir } = await loadRealConfigStore()
+  try {
+    const profile = store.getModelProfile('moss').config
+    const zh = readJson('scripts/fixtures/promptlens/baseline-ir-zh.json')
+    const out = await compilePrompt({ ir: zh, profile, kb: null, captionLanguage: 'zh-CN' })
+
+    const joined = JSON.stringify(out.slots) + JSON.stringify(out.keywords)
+    assert.equal(/holding_/.test(joined), false, `复合标签不该出现：${joined.slice(0, 200)}`)
+
+    const hit = out.diagnostics.find((item) => item.error_code === 'COMPILE_RELATION_COMPOUND_SKIPPED_ZH')
+    assert.ok(hit, '缺少中文跳过合成的说明')
+    assert.equal(hit.severity, 'info')
+    assert.match(hit.message, /不拼复合词/)
+
+    // 关系没有丢：它仍然写在 Caption 的中文句子里。
+    assert.match(out.caption.text, /握着伞柄/)
+
+    // 英文那条路径照旧合成，说明这道闸门只对中文生效。
+    const en = readJson('scripts/fixtures/promptlens/baseline-ir.json')
+    const enOut = await compilePrompt({ ir: en, profile, kb: null })
+    assert.equal(
+      enOut.diagnostics.some((item) => item.error_code === 'COMPILE_RELATION_COMPOUND_SKIPPED_ZH'),
+      false,
+    )
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+test('整条链路走通：语言在视觉之前定下，一路传到 Caption，请求次数不变', async () => {
+  const { store, dataDir } = await loadRealConfigStore()
+  const runOnce = async (captionLanguage) => {
+    const calls = []
+    const backend = {
+      async complete(request) {
+        const zh = /value 用中文写/.test(request.system ?? '')
+        calls.push({ zh, images: (request.images ?? []).length })
+        return {
+          text: JSON.stringify({
+            color_mode: 'color',
+            scene: { summary: zh ? '雨中的街道。' : 'A rainy street.' },
+            dimension_coverage: {},
+            features: [
+              {
+                category: 'composition', key: 'framing', value: zh ? '七分身取景' : 'cowboy shot',
+                confidence: 0.8, importance: 0.9, status: 'confirmed',
+              },
+            ],
+            entities: [
+              {
+                entity_id: 'e1', kind: 'person', label: zh ? '少女' : 'girl', count: 1,
+                confidence: 0.9, importance: 0.5, region: [0.2, 0.1, 0.8, 0.95],
+                features: [
+                  {
+                    category: 'appearance', key: 'hair_color', value: zh ? '银色长发' : 'silver hair',
+                    confidence: 0.9, importance: 0.5, status: 'confirmed',
+                  },
+                ],
+              },
+            ],
+            relations: [],
+            uncertainties: [],
+            review_requests: [],
+          }),
+          finish_reason: 'stop',
+          backend: 'fake', provider: 'fake', model: 'fake',
+          usage: { prompt_tokens: 10, completion_tokens: 10 },
+        }
+      },
+    }
+    const runtime = {
+      logger: { warn() {}, info() {}, error() {}, debug() {} },
+      pluginConfig: {},
+      getConfigStore: async () => store,
+      getKnowledgeBase: async () => {
+        throw new Error('kb offline')
+      },
+      getPreparer: async () => ({
+        prepare: async () => ({
+          image: { width: 832, height: 1216, aspect_ratio: '0.684', metrics: null, normalized_path: 'C:/fake.png' },
+          warnings: [],
+          tempDir: null,
+          normalizedPath: 'C:/fake.png',
+        }),
+        finish: async () => {},
+      }),
+      getVisionBackend: async () => backend,
+    }
+    const env = await runAnalyzePipeline(runtime, {
+      image_path: 'C:/fake.png',
+      target_profile: 'moss',
+      ...(captionLanguage ? { caption_language: captionLanguage } : {}),
+    })
+    return { env, calls }
+  }
+
+  try {
+    const zh = await runOnce('zh-CN')
+    const en = await runOnce(null)
+
+    // 视觉阶段真的按中文写了观察值，IR 记下了这一点，Caption 是中文。
+    assert.equal(zh.env.result.ir.observation_language, 'zh-CN')
+    assert.match(zh.env.result.prompts.positive, /画面中的主体是少女/)
+    assert.equal(zh.env.result.prompt_style, 'caption')
+
+    // 语言是在发请求之前定的：第一次视觉请求的系统提示词已经是中文口径。
+    assert.equal(zh.calls[0].zh, true, '第一次视觉请求就不是中文口径，说明语言定得太晚')
+    assert.equal(en.calls[0].zh, false)
+
+    // 不新增视觉请求、不重复传图：中英两次的请求条数与每次的图片张数完全一致。
+    assert.equal(zh.calls.length, en.calls.length)
+    assert.deepEqual(zh.calls.map((call) => call.images), en.calls.map((call) => call.images))
+    assert.equal(zh.calls.filter((call) => call.images > 0).length, zh.calls.length, '每次请求都带图，没有纯文本补问')
+
+    // 英文路径没有因为这次改动变样。
+    assert.equal(en.env.result.ir.observation_language, 'en')
+    assert.match(en.env.result.prompts.positive, /silver hair/)
+
+    const errors = zh.env.diagnostics.filter((item) => item.severity === 'error')
+    assert.deepEqual(errors, [], `中文链路出现 error：${errors.map((item) => item.error_code).join('；')}`)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
 })

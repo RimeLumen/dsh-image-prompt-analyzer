@@ -36,8 +36,22 @@ const ABSENCE_PATTERNS = [
   /\bhidden by (?:the )?(?:crop|frame|edge)\b/,
 ]
 
+/**
+ * 中文的缺席断言。与 `terms.js` 里的 `NEGATION_PATTERNS_ZH` 分开：那边管"这句话是
+ * 否定式、不该进正向词"，这边管"这句话是局部裁图推出来的、不能当全图事实"。
+ * 判定顺序也不同——`localAbsenceScope` 返回的 `crop` / `frame` 决定合并策略。
+ */
+const ABSENCE_PATTERNS_ZH = [
+  /(?:看不到|看不见|未见|没有|不存在|缺少|不包含)/,
+  /(?:被|给)?(?:裁掉|切掉|裁出画面|挡在画面外|在画外|不在画面内)/,
+  /(?:不可见|无法看清|辨认不出)/,
+]
+
 /** 这句话自己就限定了"在裁图 / 画幅范围内"。 */
 const CROP_SCOPE_PATTERN = /\b(?:(?:in|within|from) (?:this|the) (?:crop|frame|view|shot)|(?:by|at|near) the (?:crop|frame) edge|(?:crop|frame) edge|cropped out|out of (?:the )?(?:frame|crop|view|shot)|off[ -]?frame|outside (?:the )?(?:crop|frame|view|shot))\b/
+
+/** 中文的裁图范围限定。 */
+const CROP_SCOPE_PATTERN_ZH = /(?:这块|这块裁图|裁图里|裁图内|局部|画面边缘|画框外|画外|画面外|超出画面|被裁掉|被切掉)/
 
 /**
  * 判定一条阶段 B 观察是不是缺席断言。
@@ -48,7 +62,9 @@ const CROP_SCOPE_PATTERN = /\b(?:(?:in|within|from) (?:this|the) (?:crop|frame|v
 export function localAbsenceScope(value) {
   const text = String(value ?? '').toLowerCase()
   if (!text.trim()) return null
-  if (!ABSENCE_PATTERNS.some((pattern) => pattern.test(text))) return null
+  const zh = ABSENCE_PATTERNS_ZH.some((pattern) => pattern.test(text))
+  if (!zh && !ABSENCE_PATTERNS.some((pattern) => pattern.test(text))) return null
+  if (zh) return CROP_SCOPE_PATTERN_ZH.test(text) ? 'crop' : 'frame'
   return CROP_SCOPE_PATTERN.test(text) ? 'crop' : 'frame'
 }
 
@@ -58,13 +74,16 @@ export function shortId(prefix = 'id') {
   return `${prefix}_${stamp}${rand}`
 }
 
-export function createIR({ taskId, image, provenance = {} } = {}) {
+export function createIR({ taskId, image, provenance = {}, observationLanguage = 'en' } = {}) {
   const width = Number(image?.width) || 0
   const height = Number(image?.height) || 0
   return {
     schema_version: IR_SCHEMA_VERSION,
     task_id: String(taskId ?? '').trim() || shortId('task'),
     created_at: new Date().toISOString(),
+    // 观察值是用哪种语言写下来的。Caption 编译要靠它判断"这份 IR 能不能出中文"，
+    // 而不是靠猜：一份英语 IR 硬要出中文，只可能是翻译，而这里不做翻译。
+    observation_language: String(observationLanguage ?? 'en') === 'zh-CN' ? 'zh-CN' : 'en',
     image: {
       width,
       height,

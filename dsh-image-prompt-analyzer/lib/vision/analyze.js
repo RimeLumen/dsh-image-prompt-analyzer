@@ -3,7 +3,7 @@ import { addEntity, addEntityFeature, addFeature, addRelation, addUncertainty, a
 import { isNormalizedBox } from '../ir/schema.js'
 import { SEVERITY, diagnostic } from '../diagnostics.js'
 import { VisionError, VISION_CODES } from './backend.js'
-import { STAGE_A_SYSTEM, STAGE_B_SYSTEM, buildStageAPrompt, buildStageBPrompt } from './prompt.js'
+import { buildStageASystem, buildStageAPrompt, buildStageBSystem, buildStageBPrompt } from './prompt.js'
 import { computeDimensionCoverage, coverageProblems } from './coverage.js'
 import { dimensionById } from './dimensions.js'
 import { EVIDENCE_CODES, checkAtmosphere, checkEquipmentHandling, checkPoseAxes, enforceBackground, enforceDiffusion, enforceFaceLuminance, enforceFaceOcclusion, enforceMonochrome, enforceRenderMedium, enforceTorsoOrientation, tidyObservationFragments } from './evidence.js'
@@ -265,12 +265,13 @@ export async function analyzeVision({
   visionConfig = {},
   provenance = {},
   locale = 'zh',
+  observationLanguage = 'en',
   signal,
   logger,
 } = {}) {
   const diagnostics = []
   const taskId = provenance.task_id ?? shortId('task')
-  const ir = createIR({ taskId, image: prepared.image, provenance })
+  const ir = createIR({ taskId, image: prepared.image, provenance, observationLanguage })
 
   const maxTokens = visionConfig.max_tokens
   const temperature = visionConfig.temperature
@@ -304,7 +305,9 @@ export async function analyzeVision({
     metrics: prepared.image?.metrics ?? null,
     locale,
     colorPreflight,
+    observationLanguage,
   })
+  const stageASystem = buildStageASystem({ observationLanguage })
   const stageAImages = [{ path: normalizedPath, mediaType: 'image/png', name: 'image.png' }]
   const firstBudget = Number.isFinite(maxTokens) && maxTokens > 0 ? Math.floor(maxTokens) : null
 
@@ -322,7 +325,7 @@ export async function analyzeVision({
     try {
       result = await backend.complete({
         prompt: attempt === 1 ? stageAPrompt : `${stageAPrompt}\n\n${STAGE_A_TRUNCATION_NUDGE}`,
-        system: STAGE_A_SYSTEM,
+        system: stageASystem,
         images: stageAImages,
         signal,
         maxTokens: attemptBudget ?? undefined,
@@ -532,8 +535,9 @@ export async function analyzeVision({
             colorMode: ir?.provenance?.color_mode ?? null,
             entities: reviewEntityLines(ir),
             facts: reviewFactsFor(ir, crop.targets),
+            observationLanguage,
           }),
-          system: STAGE_B_SYSTEM,
+          system: buildStageBSystem({ observationLanguage }),
           images: [{ path: decoded.path, mediaType: 'image/png', name: `${crop.id}.png` }],
           signal,
           maxTokens,
@@ -659,8 +663,9 @@ export async function analyzeVision({
           colorMode: ir?.provenance?.color_mode ?? null,
           entities: reviewEntityLines(ir),
           facts: reviewFactsFor(ir, [target]),
+          observationLanguage,
         }),
-        system: STAGE_B_SYSTEM,
+        system: buildStageBSystem({ observationLanguage }),
         images: [{ path: normalizedPath, mediaType: 'image/png', name: 'image.png' }],
         signal,
         maxTokens,

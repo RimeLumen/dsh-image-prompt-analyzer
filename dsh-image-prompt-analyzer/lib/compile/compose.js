@@ -27,6 +27,7 @@ export const COMPOSE_SCHEMA_VERSION = '1.0'
 export const COMPOSE_CODES = Object.freeze({
   SYNTHESIZED_COMPOUND: 'COMPILE_SYNTHESIZED_COMPOUND',
   RELATION_NOT_COMPOSED: 'COMPILE_RELATION_NOT_COMPOSED',
+  RELATION_COMPOUND_SKIPPED_ZH: 'COMPILE_RELATION_COMPOUND_SKIPPED_ZH',
   UNGROUNDED_PROSE: 'COMPOSE_UNGROUNDED_PROSE',
   NEGATED_OBSERVATION_DROPPED: 'COMPILE_NEGATED_OBSERVATION_DROPPED',
   CHARACTER_INJECTED: 'COMPILE_CHARACTER_INJECTED',
@@ -312,7 +313,7 @@ function labelTag(entity) {
  * 把实体关系压成复合标签。只有满足下面全部条件才合成：
  * 关系类型在白名单里、两端实体都有可用标签、目标标签是 1–2 个词、结果不与已有标签重复。
  */
-export function synthesizeRelationTerms(ir, { terms = [] } = {}) {
+export function synthesizeRelationTerms(ir, { terms = [], language = 'en' } = {}) {
   const entities = entityById(ir)
   const existing = new Set(
     (Array.isArray(terms) ? terms : []).map((term) => normalizeTagName(term?.text ?? '')).filter(Boolean),
@@ -336,6 +337,13 @@ export function synthesizeRelationTerms(ir, { terms = [] } = {}) {
       entity_id: relation?.from ?? null,
     },
   })
+
+  // 复合标签的模板本身是英文：`holding_umbrella` 这种形状来自 Danbooru 的动词前缀。
+  // 拿中文物体标签去套，只会拼出 `holding_黑伞`——两种语言缝在一起，任何词表里都不存在。
+  // 所以中文观察下干脆不合成：关系已经由 Caption 里的中文句子承担，标签通道不需要它。
+  if (language === 'zh-CN') {
+    return { terms: [], skipped: relations.map((relation) => skipFor(relation, { reason: 'non_english_compound' })) }
+  }
 
   for (const relation of relations) {
     const rule = RELATION_COMPOUNDS[relation?.type]

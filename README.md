@@ -461,7 +461,11 @@ comfyui:
 | `MODEL_PROFILE_NOT_SELECTED` | 没传 `target_profile` | 传 `illustrious`、`anima` 或 `moss` |
 | `COMPILE_MOSS_CAPTION_EMPTY` | IR 里没有能写进 Caption 的事实 | 这是硬失败，`prompts.positive` 是空的；不会退回标签流。检查这次反推是不是什么也没观察到 |
 | `COMPILE_MOSS_LAYOUT_EMPTY` | 要了 Layout，但 IR 里一个可靠 region 都没有 | 坐标只能来自 IR，不会凭空补。关掉 `layout` 用 Caption，或先解决反推拿不到位置的问题 |
-| `TAG_STANDARD_CAPTION_LANGUAGE_UNSUPPORTED` | 档案里 `tag_standard.caption_language` 写了 `en` 以外的值 | 当前只有英语 Caption 可用，改回 `en` |
+| `TAG_STANDARD_CAPTION_LANGUAGE_UNSUPPORTED` | 档案里 `tag_standard.caption_language` 写了 `en` / `zh-CN` 以外的值 | 改成 `en` 或 `zh-CN`（`zh`、`zh_hans`、`cn` 是 `zh-CN` 的别名） |
+| `COMPILE_MOSS_CAPTION_LANGUAGE_EMPTY` | 要的语言和这份 IR 的观察语言对不上（英文 IR 要中文，或反过来） | 这是硬失败，正文是空的：插件不会翻译。用对的语言重新分析这张图 |
+| `CAPTION_LANGUAGE_IGNORED` | 对标签档 / 描述档传了 `caption_language=zh-CN` | 提醒不是错误：那两档不写 Caption，分析照常按英文跑完 |
+| `CAPTION_LANGUAGE_UNSUPPORTED` | `caption_language` 写了认不出的值 | 改成 `en` 或 `zh-CN`。语言在分析开始前就要定，改完要重新分析 |
+| `COMPILE_RELATION_COMPOUND_SKIPPED_ZH` | 中文观察下没拼复合标签（`holding_黑伞`） | 不是错误：模板是英文动词前缀，中文物体标签套上去只会拼出缝合词。关系已经写在 Caption 的中文句子里 |
 | `COMFY_CAPABILITY_UNAVAILABLE`（`comfyui_start`） | 没找到启动器，或没找到 python 解释器，或 Host 没有 `subprocess` 服务 | 看报错里列出的 `scanned_paths`；手填 `comfyui.installRoot` 指向真正的安装根 |
 | `COMFY_BINDING_AMBIGUOUS` | 安装根和上一级里找到多个启动器 | 报错里会列出全部候选；手动打开你要用的那个 |
 | `COMFY_TARGET_NOT_LOCAL` | `baseUrl` 或 `open_web_ui` 的目标不是回环地址 | 改回 `127.0.0.1` / `localhost` / `::1`；插件不会退回默认地址偷偷连本机 |

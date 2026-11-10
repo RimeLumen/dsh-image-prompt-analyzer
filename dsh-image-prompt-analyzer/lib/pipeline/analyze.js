@@ -2,6 +2,7 @@
 import { SEVERITY, diagnostic, newTaskId } from '../diagnostics.js'
 import { PIPELINE_CODES } from './codes.js'
 import { acquireKnowledgeBase, failedEnvelope, resolveAnalysisContext } from './context.js'
+import { resolveObservationLanguage } from './language.js'
 import {
   buildAnalysisEnvelope,
   compileStage,
@@ -56,6 +57,16 @@ export async function runAnalyzePipeline(runtime, args = {}) {
   const { store, profileRequest, presetResult } = context
   const snapshot = await store.inspect()
 
+  // 语言必须在视觉分析之前定下来：它决定观察值用哪种语言写。
+  // 分析完再改，IR 里根本没有那种语言的事实，只能重新分析——所以这里算错一次，
+  // 后面每一步都是错的，宁可现在就停下。
+  const language = resolveObservationLanguage({
+    profile: profileRequest.profile,
+    requested: args.caption_language ?? null,
+  })
+  diagnostics.push(...language.diagnostics)
+  if (!language.ok) return failedEnvelope(taskId, diagnostics)
+
   const prepared = await prepareInputStage(runtime, { imagePath, taskId, diagnostics })
   if (!prepared) return failedEnvelope(taskId, diagnostics)
 
@@ -75,6 +86,7 @@ export async function runAnalyzePipeline(runtime, args = {}) {
       snapshot,
       taskId,
       args,
+      observationLanguage: language.language,
       diagnostics,
     })
     if (!analysis) return failedEnvelope(taskId, diagnostics)
@@ -97,6 +109,8 @@ export async function runAnalyzePipeline(runtime, args = {}) {
       // 可选 JSON Layout：只有 caption 档案 + 用户明确要才生效。
       // 传 true 或对象都行；对象可带 coord_space / bbox_format / canvas_width / canvas_height / max_elements。
       layout: normalizeLayoutArg(args.layout),
+      // 与视觉阶段同一个值：编译层据此选模板，也据此判断"这份 IR 出得了这种语言吗"。
+      captionLanguage: language.language,
       diagnostics,
     })
 

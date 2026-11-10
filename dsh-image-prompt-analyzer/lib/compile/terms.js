@@ -51,6 +51,25 @@ const NEGATION_PATTERNS = Object.freeze([
 ])
 
 /**
+ * 中文的否定式。
+ *
+ * 中文模式里观察值由模型直接写中文，英文正则一条都命中不了，于是「画面里没有剑」
+ * 会被当成一条普通观察收进 IR，再被 Caption 原样写成「画面里没有剑」——
+ * 提示词里出现否定句是最坏的一种幻觉：模型会把「剑」画出来。
+ *
+ * 只认明确的否定句式，不认「空」「无」这类单字（「空旷」不是否定）。
+ */
+const NEGATION_PATTERNS_ZH = Object.freeze([
+  /^(?:没有|没看到|看不到|看不见|未见|不存在|缺少|缺少了|不含|不包含|未出现)/,
+  /(?:画面|图中|图里|照片里|镜头里)(?:中|内|里)?(?:没有|没看到|看不到|看不见|未见|不存在)/,
+  // 「画面里没有人群」「远处看不到人」两种语序都要认：否定词可能跟在方位词后，
+  // 也可能被地点状语隔开。少了这一条，`画面里没有人群` 会被当成一条普通背景观察。
+  /(?:没有|没看到|看不到|看不见|未见|不存在)(?:任何|什么)?(?:人|人群|人影|观众|旁人)/,
+  /(?:被|给)?(?:裁掉|切掉|裁出画面|挡在画面外|在画面之外|在画外|不在画面内?)/,
+  /(?:不可见|看不清|无法看清|无法辨认|辨认不出)/,
+])
+
+/**
  * "不知道"不是观察。
  *
  * 模型拿不准时会写 unknown / indeterminate / not sure / n/a，这些词一旦进正向词，
@@ -62,9 +81,16 @@ const PLACEHOLDER_TOKENS = new Set([
   'unidentified', 'unspecified', 'na', 'none', 'null', 'tbd', 'ambiguous', 'uncertain',
 ])
 
+/** 中文占位词。模型写「未知」「看不清」和写 unknown 是一回事，都该进 uncertainties。 */
+const PLACEHOLDER_TOKENS_ZH = new Set([
+  '未知', '不详', '不确定', '无法确定', '看不出来', '看不清', '难以判断', '无法判断',
+  '不明确', '待定', '无法辨认', '模糊不清', '不明',
+])
+
 export function isPlaceholderObservation(text) {
   const value = String(text ?? '').trim().toLowerCase()
   if (value.length === 0) return true
+  if (PLACEHOLDER_TOKENS_ZH.has(value.replace(/[。．.，,、；;！!？?\s]/g, ''))) return true
   // "n/a"、"n.a."、"unknown." 这类写法先归一成字母串再比。
   if (PLACEHOLDER_TOKENS.has(value.replace(/[^a-z]/g, ''))) return true
   const parts = value.split(/[^a-z0-9]+/).filter(Boolean)
@@ -83,7 +109,8 @@ export function isNegatedObservation(text) {
   if (value.length === 0) return false
   const lowered = value.toLowerCase()
   if (NEGATION_ALLOWLIST.has(lowered)) return false
-  return NEGATION_PATTERNS.some((pattern) => pattern.test(value))
+  if (NEGATION_PATTERNS.some((pattern) => pattern.test(value))) return true
+  return NEGATION_PATTERNS_ZH.some((pattern) => pattern.test(value))
 }
 
 export function toDescriptionText(value) {

@@ -7,6 +7,7 @@ import {
   SLOT_NAMES,
   WORD_STYLES,
   isSlotName,
+  normalizeCaptionLanguage,
 } from './schema.js'
 import { errorGroupFor } from '../diagnostics.js'
 
@@ -148,16 +149,17 @@ export function validateModelProfile(doc, { configFile = null } = {}) {
 
   // Caption 档案可以声明自己只写哪种语言。写错语言不是小事：编译器会直接拒绝出稿，
   // 但如果档案里把语言码拼错了，用户拿到的是一句"这个语言不支持"，看不出是自己拼错。
+  // 所以这里也用同一套归一化：`zh`、`zh_hans` 这类写法认得出，认不出的才报错。
   if (tagStandard.caption_language !== undefined && tagStandard.caption_language !== null) {
-    const language = String(tagStandard.caption_language).trim()
-    if (language !== '' && !CAPTION_LANGUAGES.includes(language)) {
+    const raw = String(tagStandard.caption_language).trim()
+    if (raw !== '' && normalizeCaptionLanguage(raw) === null) {
       diagnostics.push(
         diagnostic(
           configFile,
           TAG_STANDARD_CODES.CAPTION_LANGUAGE_UNSUPPORTED,
           '/tag_standard/caption_language',
-          `caption_language 目前只支持 ${CAPTION_LANGUAGES.join(' / ')}，当前是 ${JSON.stringify(tagStandard.caption_language)}。`,
-          'Caption 直接从 IR 观察值编译，而 IR 里的观察值是英语；要中文必须另加一层翻译，那是另一次模型调用，不在本插件范围内。',
+          `caption_language 只支持 ${CAPTION_LANGUAGES.join(' / ')}，当前是 ${JSON.stringify(tagStandard.caption_language)}。`,
+          '选 zh-CN 时视觉分析会直接用中文写观察值，Caption 也就用中文；选 en 时保持英语。语言在分析开始前就要定，改语言需要重新分析。',
         ),
       )
     }

@@ -100,7 +100,14 @@ function featureList(entity) {
   return Array.isArray(entity?.features) ? entity.features : []
 }
 
-function describeEntity(entity) {
+/**
+ * 一个元素的描述串：标签在前，特征按重要度跟在后面。
+ *
+ * 中文模式下分隔符换成顿号/逗号——`银发少女, 白色连衣裙` 读起来是英语标点套中文词，
+ * 而这段描述是要喂给模型的自然语言。标签与特征值本身一个字都不动：
+ * 它们是视觉阶段按同一种语言写下的观察，不是这里翻出来的。
+ */
+function describeEntity(entity, language = 'en') {
   const values = featureList(entity)
     .filter((feature) => feature && typeof feature.value === 'string' && feature.value.trim())
     .filter((feature) => String(feature.category ?? '') !== 'quality_style')
@@ -110,10 +117,11 @@ function describeEntity(entity) {
     .slice(0, MAX_DESC_FACTS)
     .map((feature) => feature.value.trim())
   const label = String(entity?.label ?? '').trim()
-  return [label, ...values].filter(Boolean).join(', ')
+  const parts = [label, ...values].filter(Boolean)
+  return parts.join(language === 'zh-CN' ? '，' : ', ')
 }
 
-function collectTextItems(ir, { width, height, diagnostics }) {
+function collectTextItems(ir, { width, height, diagnostics, language = 'en' }) {
   const items = []
   const seen = new Set()
 
@@ -142,8 +150,10 @@ function collectTextItems(ir, { width, height, diagnostics }) {
     }
     seen.add(text)
     items.push({
+      // label 是结构字段，两种语言都一样：它标的是"这是个文字条"，不是画面内容。
       label: 'text',
-      caption: `the text "${text}"`,
+      // caption 才是给人/模型读的那句。画面文字本身（text）逐字保留，不翻译。
+      caption: language === 'zh-CN' ? `画面文字「${text}」` : `the text "${text}"`,
       text,
       bbox: box,
     })
@@ -178,6 +188,9 @@ export function buildMossLayout({
   maxElements = DEFAULT_MAX_ELEMENTS,
   coordSpace = 'abs',
   bboxFormat = 'xyxy',
+  // Layout 里那些"描述性"字段（items[].caption）用哪种语言写。
+  // 结构字段一律不变：label、bbox、text、坐标格式、画布。
+  language = 'en',
 } = {}) {
   const diagnostics = []
   const width = Number.isInteger(canvasWidth) && canvasWidth > 0 ? canvasWidth : Number(ir?.image?.width)
@@ -262,12 +275,12 @@ export function buildMossLayout({
     }
     objects.push({
       label: String(entity.label ?? '').trim() || String(entity.kind ?? 'object'),
-      caption: describeEntity(entity),
+      caption: describeEntity(entity, language),
       bbox: box,
     })
   }
 
-  const texts = collectTextItems(ir, { width, height, diagnostics })
+  const texts = collectTextItems(ir, { width, height, diagnostics, language })
   let items = [...objects, ...texts].sort((a, b) => {
     const areaA = (a.bbox[2] - a.bbox[0]) * (a.bbox[3] - a.bbox[1])
     const areaB = (b.bbox[2] - b.bbox[0]) * (b.bbox[3] - b.bbox[1])

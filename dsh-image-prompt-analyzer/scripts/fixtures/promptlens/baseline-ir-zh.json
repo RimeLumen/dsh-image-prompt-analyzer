@@ -1,0 +1,192 @@
+{
+  "schema_version": "1.0",
+  "task_id": "baseline-task-zh",
+  "created_at": "2026-11-10T00:00:00.000Z",
+  "observation_language": "zh-CN",
+  "image": {
+    "width": 832,
+    "height": 1216,
+    "aspect_ratio": "0.684",
+    "has_alpha": false,
+    "src_format": "PNG",
+    "decoded_via": "pillow",
+    "source_width": 832,
+    "source_height": 1216,
+    "scale": 1,
+    "orientation_applied": 1,
+    "transparent_ratio": null
+  },
+  "scene": {
+    "summary": "雨天的街道上，一名少女撑着黑伞站在镜头前。"
+  },
+  "composition": {},
+  "camera": {},
+  "entities": [
+    {
+      "entity_id": "ent_1",
+      "kind": "person",
+      "label": "少女",
+      "count": 1,
+      "confidence": 0.9,
+      "importance": 0.5,
+      "region": [0.2, 0.1, 0.8, 0.95],
+      "features": [
+        {
+          "category": "appearance",
+          "key": "hair_color",
+          "value": "银色长发",
+          "confidence": 0.9,
+          "importance": 0.2667,
+          "source": "global_analysis",
+          "status": "confirmed"
+        },
+        {
+          "category": "appearance",
+          "key": "eye_color",
+          "value": "红色眼睛",
+          "confidence": 0.85,
+          "importance": 0.2667,
+          "source": "global_analysis",
+          "status": "confirmed"
+        },
+        {
+          "category": "clothing",
+          "key": "upper_body",
+          "value": "白色衬衫",
+          "confidence": 0.88,
+          "importance": 0.2667,
+          "source": "global_analysis",
+          "status": "confirmed"
+        },
+        {
+          "category": "expression",
+          "key": "mouth",
+          "value": "微微的笑",
+          "confidence": 0.8,
+          "importance": 0.1,
+          "source": "global_analysis",
+          "status": "confirmed"
+        }
+      ]
+    },
+    {
+      "entity_id": "ent_2",
+      "kind": "prop",
+      "label": "黑伞",
+      "count": 1,
+      "confidence": 0.7,
+      "importance": 0.2,
+      "region": [0.55, 0.2, 0.95, 0.6],
+      "features": []
+    }
+  ],
+  "relations": [
+    {
+      "relation_id": "rel_1",
+      "type": "holding",
+      "from": "ent_1",
+      "to": "ent_2",
+      "description": "右手握着伞柄",
+      "confidence": 0.8,
+      "importance": 0.3,
+      "source": "global_analysis",
+      "status": "confirmed"
+    }
+  ],
+  "features": [
+    {
+      "category": "subject",
+      "key": "count",
+      "value": "一名少女",
+      "confidence": 0.95,
+      "importance": 0.5,
+      "source": "global_analysis",
+      "status": "confirmed"
+    },
+    {
+      "category": "composition",
+      "key": "framing",
+      "value": "七分身取景",
+      "confidence": 0.8,
+      "importance": 1,
+      "source": "global_analysis",
+      "status": "confirmed"
+    },
+    {
+      "category": "camera",
+      "key": "angle",
+      "value": "仰角",
+      "confidence": 0.75,
+      "importance": 0.8333,
+      "source": "global_analysis",
+      "status": "confirmed"
+    },
+    {
+      "category": "background",
+      "key": "backdrop",
+      "value": "雨中的街道",
+      "confidence": 0.7,
+      "importance": 0.1667,
+      "source": "global_analysis",
+      "status": "confirmed"
+    },
+    {
+      "category": "lighting_color",
+      "key": "light_source",
+      "value": "阴天漫射光",
+      "confidence": 0.65,
+      "importance": 0.1333,
+      "source": "global_analysis",
+      "status": "confirmed"
+    },
+    {
+      "category": "pose_action",
+      "key": "stance",
+      "value": "重心落在一条腿上",
+      "confidence": 0.6,
+      "importance": 0.3333,
+      "source": "global_analysis",
+      "status": "tentative"
+    },
+    {
+      "category": "pose_action",
+      "key": "hand",
+      "value": "左手抬向镜头，掌心张开",
+      "confidence": 0.7,
+      "importance": 0.3333,
+      "source": "global_analysis",
+      "status": "confirmed"
+    },
+    {
+      "category": "background",
+      "key": "absence",
+      "value": "画面里没有人群",
+      "confidence": 0.6,
+      "importance": 0.1667,
+      "source": "global_analysis",
+      "status": "confirmed"
+    },
+    {
+      "category": "text",
+      "key": "sign_text",
+      "value": "营业中 OPEN 24H",
+      "confidence": 0.9,
+      "importance": 0.2,
+      "region": [0.62, 0.08, 0.94, 0.18],
+      "source": "global_analysis",
+      "status": "confirmed"
+    }
+  ],
+  "uncertainties": [
+    {
+      "uncertainty_id": "unc_1",
+      "code": "color_indeterminable",
+      "subject": "伞面",
+      "question": "伞面是黑色还是藏青色",
+      "severity": "low"
+    }
+  ],
+  "provenance": {
+    "analyzer": "baseline-fixture-zh"
+  }
+}

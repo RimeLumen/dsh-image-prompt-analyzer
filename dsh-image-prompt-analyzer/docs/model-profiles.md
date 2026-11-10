@@ -92,19 +92,90 @@ worst quality, bad anatomy, watermark, jpeg artifact
 
 ### 语言
 
-MOSS 官方推荐英文（训练数据更多），也支持中文。**本插件目前只输出英文 Caption，
-中文支持未完成。**
+MOSS 官方推荐英文（训练数据更多），也支持中文。本插件两种都能出：`en`（默认）
+与 `zh-CN`。
 
-原因不是偷懒，是没有可靠数据来源：IR 里的观察值本身是英文（视觉阶段被要求写成
-英文小写），仓库里只有两份 Danbooru 标签表，没有任何中英对照资源。要出中文，
-要么再加一次翻译 LLM 调用，要么逐词替换——前者违反「不增加额外 LLM 调用」的
-约束，后者会产出一段半英文半中文的垃圾。
+**中文不是把英文 Caption 翻一遍。** 语言一路推到最上游：
 
-所以 `caption_language` 是一个受支持的配置项（`configs/model-profiles/moss.json`
-里写 `"en"`），但清单里只有 `en`：档案校验会拒掉别的值
-（`TAG_STANDARD_CAPTION_LANGUAGE_UNSUPPORTED`），编译器也会在运行期硬失败
-（`COMPILE_MOSS_CAPTION_LANGUAGE_UNSUPPORTED`），不会偷偷降级成英文再假装成功。
-画面里的文字仍逐字保留原文，招牌上写中文就照抄中文。
+1. 分析开始前先定语言（任务参数 `caption_language` > 档案里的
+   `tag_standard.caption_language` > 默认 `en`）。
+2. 视觉阶段按这个语言写观察值——选 `zh-CN` 时 Stage A / Stage B 直接写
+   `银色长发`、`右手握着伞柄`，而不是写完英文再换。IR 里记一个
+   `observation_language`。
+3. 编译阶段按同一种语言组织句子。中文走 `lib/compile/moss.js` 里的中文模板，
+   句与句之间不加空格，用「画面中的主体是……」「她的表情是……」「构图是……」推进。
+
+整个过程没有第二次视觉调用、没有翻译模型、没有中英双份 IR。
+
+语言对不上就明确失败，不硬凑：拿一份英文 IR 要中文（或反过来），编译报
+`COMPILE_MOSS_CAPTION_LANGUAGE_EMPTY`，`caption.ok === false`、正文空串。
+唯一正确的做法是用对的语言重新分析那张图——把英文 Caption 翻成中文，句子就
+回指不到任何一条观察了，那正是这个档案最不该交的东西。
+
+写法归一：`zh`、`zh_hans`、`cn`、`chinese` 都认成 `zh-CN`；`en-US`、`english`
+认成 `en`。认不出的（`fr`、`ja`）不猜，档案校验报
+`TAG_STANDARD_CAPTION_LANGUAGE_UNSUPPORTED`，运行期报
+`COMPILE_MOSS_CAPTION_LANGUAGE_UNSUPPORTED`。
+
+中文 Caption 只有 Caption 档能出。标签档 / 描述档传 `caption_language=zh-CN`
+会得到一条 WARNING 级的 `CAPTION_LANGUAGE_IGNORED`，分析照常按英文跑完——
+那两档本来就不写 Caption，没必要为此让整次分析失败。
+
+画面里的文字**逐字保留，不翻译**。招牌上写 `营业中 OPEN 24H`，中文 Caption 里
+就是 `画面里有文字「营业中 OPEN 24H」。`——翻译它等于改画面内容。
+
+#### 中英同一事实的对照
+
+同一张图，同一份 IR 结构，只换观察语言：
+
+```
+en   The image shows a girl with silver hair and red eyes, wearing a white blouse.
+     She has a slight smile. She is standing with weight on one leg.
+     The framing is a cowboy shot. The background is a rainy street.
+     The image contains the text "营业中 OPEN 24H".
+
+zh   画面中的主体是少女，有着银色长发和红色眼睛，穿着白色衬衫。她的表情是微微的笑。
+     她左手抬向镜头，掌心张开，重心落在一条腿上。构图是七分身取景。
+     背景是雨中的街道。画面里有文字「营业中 OPEN 24H」。
+```
+
+注意三件事：英文那句 `The image contains the text "营业中 OPEN 24H"` 里的中文
+原样出现，不是 `the text "OPEN 24 hours"`；中文版的句子顺序与英文版一致（主体 →
+外观 → 服装 → 表情 → 姿态 → 关系 → 构图 → 镜头 → 背景 → 光线 → 文字）；两边
+都没有补一个 IR 里没有的词。
+
+#### 中文接地怎么校验
+
+英文 Caption 按词核对：每个实词都要能在 IR 事实里找到。中文没有空格分词，
+按词核对会把模板补的每个虚词都报成幻觉，放宽成「整句对得上某条事实」又等于
+不查。所以中文换一个粒度，**按句子挂着的来源核对**：
+
+1. 每句都必须挂着 IR 来源（observation / relation / entity_label 的 ref）。
+   挂不上来源的句子，无论读起来多通顺，都算没有依据。
+2. 句子里每个汉字，要么出现在这一句自己挂着的那几条事实里，要么属于句法骨架字
+   （的、了、是、在、方面、构图、镜头……）。骨架字只承担句子结构，不指认任何
+   画面对象——颜色、材质、物体名一个都不在里面。
+
+`caption.grounding.basis` 因此有两种值：英文是 `ir_facts`（按词），中文是
+`clause_sources`（按句子的来源）。
+
+#### Layout 里的中文
+
+`layout` 打开时，只有两处跟着语言变：`summary.caption`（就是 Caption 正文）与
+`items[].caption`（元素描述串，中文用中文标点分隔，文字条写成
+`画面文字「营业中 OPEN 24H」`）。
+
+`label`、`bbox`、`text`、`bbox_coord_space`、`bbox_format`、`canvas` 一个字都不动。
+`label` 来自 IR 的实体标签，中文 IR 里它本来就是中文——那是上游写的，不是 Layout
+翻的。文字条的 `text` 永远逐字保留原文。
+
+#### 中文观察下不拼复合标签
+
+`slots` / `keywords` 这两个标签通道里，英文会把手握、穿戴这类关系压成
+`holding_umbrella` 这种复合词。中文下这一步直接跳过，并发一条 INFO 级的
+`COMPILE_RELATION_COMPOUND_SKIPPED_ZH`：模板是英文动词前缀，套上中文物体标签只会
+得到 `holding_黑伞`——两种语言缝在一起，任何词表里都不存在。关系本身没有丢，
+它写在 Caption 的中文句子里（`她右手握着伞柄。`）。
 
 ### 空 IR 是硬失败
 
@@ -123,9 +194,10 @@ IR 里没有任何能写进 Caption 的事实时，MOSS 编译**失败**，不�
 
 - IR 是空的（没有实体、没有关系、没有观察）——`caption.observation_stats.scanned` 是 0。
 - 观察都在，但没有一条能进正向描述（`no umbrella` 这种否定式、`unknown` 这种占位符、
-  中文关系句、量测数字）——`observation_stats` 会分别给出 `negated` / `placeholder` /
-  `non_english` / `measurement` 的条数。这类失败下 `caption.facts_dropped` 是**空的**，
-  因为那些观察根本没进候选池，谈不上「排不上」。
+  量测数字，或者观察语言和目标语言对不上时的整批 `non_english`）——`observation_stats`
+  会分别给出 `negated` / `placeholder` / `non_english` / `measurement` 的条数。
+  这类失败下 `caption.facts_dropped` 是**空的**，因为那些观察根本没进候选池，
+  谈不上「排不上」。
 
 ### 只算该算的
 

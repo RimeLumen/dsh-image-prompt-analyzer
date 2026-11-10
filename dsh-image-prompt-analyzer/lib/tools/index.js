@@ -35,6 +35,7 @@ function analyzeImagePrompt(runtime) {
       '正向只给一种形态，由档案决定：标签档（word_style=spaced）给标签流，描述档（prose）给成分句，Caption 档（caption，MOSS-Image）给一段连贯的自然语言描述，不并列几版让你挑。' +
       '返回只有正向、反向、目标档案、写法（prompt_style: tag / prose / caption）、图片尺寸，以及控制网模式下必须带走的权重与区间建议。' +
       'Caption 档在明确要求时还会多一个 prompt_format（caption / layout_json）——它说的是这串描述有没有排成结构化元素，不是另一种写法。' +
+      'Caption 可以要中文（caption_language=zh-CN）：中文由视觉分析阶段直接产出，不是把英文 Caption 翻译一遍，所以语言要在分析开始前定，改语言要重新分析。' +
       '槽位明细、成分句、事实台账、还原审计、覆盖率、统计这些是分析过程，写到本地 trace（data/traces/<task_id>/），不占对话；' +
       '要逐条追查某条观察去了哪里，用 scripts/inspect-prompt.mjs 读 trace 里的 IR。' +
       '诊断只回 warning 与 error，INFO 级说明留在 trace 里。' +
@@ -94,6 +95,14 @@ function analyzeImagePrompt(runtime) {
           ],
         },
         save_experience: { type: 'boolean', description: '是否把本次结果保存进本地经验库。默认 false（需配置允许）。' },
+        caption_language: {
+          type: 'string',
+          enum: ['en', 'zh-CN'],
+          description:
+            '仅 Caption 档（moss）有意义：Caption 用哪种语言写，en 或 zh-CN。不传就用档案里的 caption_language（默认 en）。' +
+            '中文不是把英文 Caption 翻一遍：传 zh-CN 会让视觉分析阶段直接用中文写观察值，所以语言必须在分析开始前定下来，' +
+            '事后改语言要重新分析这张图（不会拿旧 IR 硬翻）。非 caption 档案传了会被忽略。',
+        },
       },
       required: ['image_path', 'target_profile'],
       additionalProperties: false,

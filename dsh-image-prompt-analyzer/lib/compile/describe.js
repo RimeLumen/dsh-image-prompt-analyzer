@@ -47,21 +47,51 @@ const CJK_PATTERN = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff]/
 /** 一条观察里的多值分隔符（与 terms.js 的 splitDescriptionPhrases 同口径）。 */
 const PART_SPLIT = /[,;，；、]+/
 
-function wordsOf(value) {
-  return normalizePromptText(value).split(' ').filter(Boolean)
+/**
+ * 分词。
+ *
+ * 英文按空格切就够了；中文不行——`银灰色长发, 浅色调` 整句只有一个空格切出来的词，
+ * 于是"换个词序说同一件事"判不出重复，"这条有没有被别的说法涵盖"永远为假，
+ * 去重与矛盾判断会一起失效。所以中文按**二字组**切：`银灰色长发` →
+ * `银灰/灰色/色长/长发`。二字组是中文里最小的稳定搭配单位，切得比单字准、
+ * 比整句细，够用来判"这两句是不是在说同一件事"。
+ */
+const CJK_RUN = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff]+/g
+
+function bigrams(run) {
+  const chars = [...run]
+  if (chars.length <= 2) return [run]
+  const grams = []
+  for (let index = 0; index < chars.length - 1; index += 1) grams.push(chars[index] + chars[index + 1])
+  return grams
 }
 
-function covers(needle, haystack, min = 0.8) {
-  const need = wordsOf(needle)
+function wordsOf(value, language = 'en') {
+  const text = normalizePromptText(value)
+  if (language !== 'zh-CN') return text.split(' ').filter(Boolean)
+  const tokens = []
+  for (const chunk of text.split(' ').filter(Boolean)) {
+    let rest = chunk
+    for (const run of chunk.match(CJK_RUN) ?? []) {
+      tokens.push(...bigrams(run))
+      rest = rest.replace(run, ' ')
+    }
+    tokens.push(...rest.split(' ').filter(Boolean))
+  }
+  return tokens
+}
+
+function covers(needle, haystack, min = 0.8, language = 'en') {
+  const need = wordsOf(needle, language)
   if (need.length === 0) return false
-  const hay = new Set(wordsOf(haystack))
+  const hay = new Set(wordsOf(haystack, language))
   const hit = need.filter((word) => hay.has(word)).length
   return hit / need.length >= min
 }
 
 /** 词序无关的词集合键：`very long flowing hair, light toned` 与 `very long light toned hair` 同键。 */
-function wordKey(value) {
-  return [...new Set(wordsOf(value))].sort().join(' ')
+function wordKey(value, language = 'en') {
+  return [...new Set(wordsOf(value, language))].sort().join(' ')
 }
 
 /**
@@ -70,9 +100,12 @@ function wordKey(value) {
  * @param {object} ir 已 finalize 的 IR
  * @param {{maxFacts?: number, maxChars?: number}} options
  */
-export function collectDescriptionFacts(ir, { maxFacts = 160, maxChars = 4000 } = {}) {
+export function collectDescriptionFacts(ir, { maxFacts = 160, maxChars = 4000, language = null } = {}) {
   const facts = []
   const diagnostics = []
+  // 语言跟着 IR 走：中文模式下观察值本身就是中文，这里不能再用"含中文就丢"的规则
+  // 把它们全筛掉——那等于中文 Caption 没有输入。
+  const lang = language ?? ir?.observation_language ?? 'en'
   const stats = {
     scanned: 0,
     kept: 0,
@@ -122,7 +155,7 @@ export function collectDescriptionFacts(ir, { maxFacts = 160, maxChars = 4000 } 
    * 量测丢掉的是数字——混成一个"被过滤"就说不清损失了什么。
    */
   const rejectReason = (text) => {
-    if (CJK_PATTERN.test(text)) return 'non_english'
+    if (lang !== 'zh-CN' && CJK_PATTERN.test(text)) return 'non_english'
     if (isNegatedObservation(text) || NON_VISUAL_PATTERN.test(text)) return 'negated'
     if (isPlaceholderObservation(text)) return 'placeholder'
     if (isMeasurementPhrase(text)) return 'measurement'
@@ -141,7 +174,7 @@ export function collectDescriptionFacts(ir, { maxFacts = 160, maxChars = 4000 } 
   }
 
   const recordFact = (text, meta, groupKey = null) => {
-    const key = wordKey(text)
+    const key = wordKey(text, lang)
     if (!key) return
     if (seen.has(key)) {
       stats.duplicate += 1
@@ -242,7 +275,7 @@ export function collectDescriptionFacts(ir, { maxFacts = 160, maxChars = 4000 } 
     }
     if (accepted.length === 0) return
     // 只剩一条时它自己就是那条观察，不需要再登记一个"组"。
-    const groupKey = accepted.length > 1 ? wordKey(accepted.join(', ')) : null
+    const groupKey = accepted.length > 1 ? wordKey(accepted.join(', '), lang) : null
     for (const part of accepted) recordFact(part, meta, groupKey)
   }
 
@@ -409,7 +442,7 @@ export function collectDescriptionFacts(ir, { maxFacts = 160, maxChars = 4000 } 
     })
   }
 
-  return { schema_version: DESCRIBE_SCHEMA_VERSION, facts: kept, dropped_facts: facts.filter((fact) => fact.dropped), diagnostics, stats }
+  return { schema_version: DESCRIBE_SCHEMA_VERSION, language: lang, facts: kept, dropped_facts: facts.filter((fact) => fact.dropped), diagnostics, stats }
 }
 
 /**
@@ -418,7 +451,7 @@ export function collectDescriptionFacts(ir, { maxFacts = 160, maxChars = 4000 } 
  * 只做支持关系核对：分句里的词是否被某条事实覆盖。它回答"这句话是从哪来的"，
  * 不回答"这句话对不对"——对错要靠生成实验，不能拿同一模型的自评冒充。
  */
-export function attachSourceRefs(clauses, facts) {
+export function attachSourceRefs(clauses, facts, { language = 'en' } = {}) {
   const list = Array.isArray(clauses) ? clauses : []
   const pool = Array.isArray(facts) ? facts : []
   return list.map((clause) => {
@@ -426,7 +459,7 @@ export function attachSourceRefs(clauses, facts) {
     const refs = []
     const supported = []
     for (const fact of pool) {
-      if (!covers(fact.text, text, 0.75)) continue
+      if (!covers(fact.text, text, 0.75, language)) continue
       supported.push(fact.text)
       for (const ref of fact.source_refs ?? []) {
         if (!refs.some((item) => JSON.stringify(item) === JSON.stringify(ref))) refs.push(ref)
@@ -443,11 +476,11 @@ export function attachSourceRefs(clauses, facts) {
  * 得比词表全很正常——于是"说得更清楚"会被判成"编造"。这里改成对准事实：
  * 每个内容词至少要被一条 IR 事实覆盖；覆盖不到的不判错，只标出来待验证。
  */
-export function verifyDescriptionGrounding({ text, facts } = {}) {
+export function verifyDescriptionGrounding({ text, facts, language = 'en' } = {}) {
   const pool = Array.isArray(facts) ? facts : []
   const factWords = new Set()
-  for (const fact of pool) for (const word of wordsOf(fact.text)) factWords.add(word)
-  const clauseWords = wordsOf(text)
+  for (const fact of pool) for (const word of wordsOf(fact.text, language)) factWords.add(word)
+  const clauseWords = wordsOf(text, language)
   const unsupported = []
   for (const word of clauseWords) {
     if (word.length < 2) continue

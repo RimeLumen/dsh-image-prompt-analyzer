@@ -151,6 +151,10 @@ export async function compilePrompt({
   // 传对象时读 coord_space / bbox_format / canvas_width / canvas_height / max_elements。
   // Layout 是同一份 IR 的另一种排布，不是第二个档案，也不是第二次视觉分析。
   layout = null,
+  // 本次要出的 Caption 语言。null = 用档案声明的值（再缺就 en）。
+  // 它与视觉阶段用的是同一个值：中文 Caption 靠的是 IR 里本来就是中文的事实，
+  // 不是把英文句子翻一遍。
+  captionLanguage = null,
 } = {}) {
   const diagnostics = []
 
@@ -163,7 +167,10 @@ export async function compilePrompt({
   const collected = collectTerms(ir, { priorityOverrides })
 
   // 先有标签，再有"带关系的标签"：把 holding / wearing 这类关系压成复合标签。
-  const compounds = synthesizeRelationTerms(ir, { terms: collected.terms })
+  // 中文观察下这一步不合成——模板是英文动词前缀，套中文物体标签只会拼出
+  // `holding_黑伞`，两种语言缝在一起，任何词表里都不存在。
+  const observationLanguage = String(ir?.observation_language ?? 'en')
+  const compounds = synthesizeRelationTerms(ir, { terms: collected.terms, language: observationLanguage })
   if (compounds.terms.length > 0) {
     diagnostics.push(
       diagnostic({
@@ -182,6 +189,18 @@ export async function compilePrompt({
         severity: SEVERITY.INFO,
         message: `${unusable.length} 条关系没有合成标签：关系另一端没有可用的 1–2 词标签。`,
         suggested_fix: '给实体补一个可检索的短 label（例如 umbrella），关系就能参与合成。',
+      }),
+    )
+  }
+  const zhCompounds = compounds.skipped.filter((entry) => entry.reason === 'non_english_compound')
+  if (zhCompounds.length > 0) {
+    diagnostics.push(
+      diagnostic({
+        error_code: COMPOSE_CODES.RELATION_COMPOUND_SKIPPED_ZH,
+        severity: SEVERITY.INFO,
+        message: `${zhCompounds.length} 条关系没有合成标签：中文观察下不拼复合词。`,
+        suggested_fix:
+          '这不是错误。复合标签的模板是英文（holding_umbrella），中文物体标签套上去只会得到 holding_黑伞；关系本身已经写在 Caption 的中文句子里。',
       }),
     )
   }
@@ -351,7 +370,11 @@ export async function compilePrompt({
 
   // IR 事实这一层三种写法都要用：候选描述版拿它当唯一输入，caption 档案拿它写完整
   // 描述，台账拿它对齐来源。所以它无条件计算。
-  const described = collectDescriptionFacts(ir)
+  const described = collectDescriptionFacts(ir, {
+    // 语言跟视觉阶段一致。Caption 档用得上（中文事实要能进候选版），
+    // 标签档的 IR 里 observation_language 恒为 en，行为与以前逐字一致。
+    language: captionLanguage ?? null,
+  })
   for (const item of described.diagnostics) diagnostics.push(item)
 
   // 冻结基线：描述版仍按原来的 leftovers 通道生成，输出与改动前逐字一致。
@@ -419,7 +442,7 @@ export async function compilePrompt({
   // 注意它吃的是 `described.facts`——和候选描述版同源，所以既没有第二次视觉调用，
   // 也不是把别的档案的成品再翻译一遍：三条通道各自从 IR 编译，彼此不嵌套。
   const caption = captionMode
-    ? composeMossCaption({ ir, profile, facts: described.facts, detailLevel, character: characterTag })
+    ? composeMossCaption({ ir, profile, facts: described.facts, detailLevel, character: characterTag, language: captionLanguage })
     : null
   if (caption) {
     diagnostics.push(...caption.diagnostics)
@@ -470,6 +493,8 @@ export async function compilePrompt({
         maxElements: Number.isInteger(layout?.max_elements) ? layout.max_elements : undefined,
         coordSpace: typeof layout?.coord_space === 'string' ? layout.coord_space : 'abs',
         bboxFormat: typeof layout?.bbox_format === 'string' ? layout.bbox_format : 'xyxy',
+        // 只有 items[].caption 与 summary.caption 跟语言走；label / bbox / text / 坐标格式 / 画布不变。
+        language: caption.language,
       })
     : null
   if (layoutResult) diagnostics.push(...layoutResult.diagnostics)
