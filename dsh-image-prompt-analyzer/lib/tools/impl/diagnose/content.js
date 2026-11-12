@@ -1,6 +1,6 @@
 
 import { SEVERITY, diagnostic } from '../../../diagnostics.js'
-import { KB_DB_CODES, knowledgeStats, lastSyncFor } from '../../../kb/index.js'
+import { KB_DB_CODES, countStudioCategories, knowledgeStats, lastSyncFor } from '../../../kb/index.js'
 import { DIAGNOSE_CODES } from './codes.js'
 
 function latestImport(handle, config) {
@@ -23,8 +23,16 @@ export function inspectContent({ handle, config }) {
   try {
     const stats = knowledgeStats(handle)
     const imported = latestImport(handle, config)
+    // 工作室分类树单独统计：它不进 by_category，混在一起会让人以为编译器多了几个槽位。
+    const studio = (config.sources ?? [])
+      .filter((source) => String(source.type ?? '') === 'studio_sqlite')
+      .map((source) => {
+        const counts = countStudioCategories(handle, String(source.source_id))
+        return { source_id: String(source.source_id), enabled: source.enabled !== false, ...counts }
+      })
     content = {
       ...stats,
+      studio_categories: studio,
       last_import:
         imported === null
           ? null

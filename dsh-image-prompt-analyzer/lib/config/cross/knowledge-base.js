@@ -1,14 +1,36 @@
 
 import { CATEGORY_IDS, MUST_KEEP_CATEGORIES, DANBOORU_NATIVE_CATEGORIES } from '../categories.js'
-import { findDuplicates, forEachPathField, makeCollectors, unsafeRelativePath } from './shared.js'
+import { findDuplicates, forEachPathField, makeCollectors, unsafeRelativePath, unsafeSourcePath } from './shared.js'
 
 const LOCAL_FORMATS = Object.freeze(['csv', 'xlsx', 'docx', 'pdf', 'txt', 'md'])
+
+// studio_sqlite 指向工作室自己的 SQLite 词库，格式由适配器判断，不需要用户声明。
+const STUDIO_SOURCE_TYPE = 'studio_sqlite'
+
+const KNOWN_SOURCE_TYPES = Object.freeze(['local_file', STUDIO_SOURCE_TYPE])
+
+const SOURCE_ROLES_LIST = Object.freeze(['model', 'supplement'])
 
 export function crossValidateKnowledgeBase(document, { config_file }) {
   const out = []
   const { err, warn } = makeCollectors(out, config_file)
 
   forEachPathField(document, ({ pointer, value }) => {
+    // 数据源路径要按类型分级校验：studio_sqlite 允许外部绝对路径，local_file 不允许。
+    if (pointer.startsWith('/sources/')) return
+    // 插件自己的库现在放在用户数据目录（跨升级保留），相对路径与绝对路径都合法。
+    if (pointer === '/storage/database_path') {
+      const reason = unsafeSourcePath(value, { allowAbsolute: true })
+      if (reason) {
+        err(
+          'CONFIG_PATH_UNSAFE',
+          pointer,
+          `路径不安全：${reason}（实际值 ${JSON.stringify(value)}）`,
+          '填相对用户数据目录的路径（例如 knowledge.sqlite3），或填一个绝对路径。',
+        )
+      }
+      return
+    }
     const reason = unsafeRelativePath(value)
     if (reason) {
       err(
@@ -35,20 +57,74 @@ export function crossValidateKnowledgeBase(document, { config_file }) {
     const at = `/sources/${index}`
     if (source === null || typeof source !== 'object') return
 
-    if (source.type !== undefined && source.type !== 'local_file') {
+    const type = source.type === undefined ? 'local_file' : String(source.type)
+    const isStudio = type === STUDIO_SOURCE_TYPE
+
+    if (!KNOWN_SOURCE_TYPES.includes(type)) {
       err(
         'KB_SOURCE_MISSING_FIELD',
         `${at}/type`,
-        `知识库 2.0 只支持 local_file 数据源，收到 type = ${JSON.stringify(source.type)}。`,
-        '删掉在线源/JSON 快照源，改成本地文件：type = local_file、format = csv/xlsx/docx/pdf/txt/md、path = 数据文件路径。',
+        `不支持的数据源类型 type = ${JSON.stringify(source.type)}。`,
+        `可用取值：${KNOWN_SOURCE_TYPES.join(' / ')}。local_file 是插件目录内的词表文件；studio_sqlite 是绘画工作室导出的 SQLite 词库。`,
+      )
+    }
+
+    // role 决定"这个词源算不算数"。写错了不能静默按类型推断：
+    // 一份中文对照表被当成模型词表，会让解释性条目跑进提示词。
+    if (source.role !== undefined && !SOURCE_ROLES_LIST.includes(String(source.role))) {
+      err(
+        'KB_SOURCE_MISSING_FIELD',
+        `${at}/role`,
+        `不认识的角色 role = ${JSON.stringify(source.role)}。`,
+        `可用取值：${SOURCE_ROLES_LIST.join(' / ')}。model 决定词能不能进提示词；supplement 只用于检索与解释。不写就按类型推断。`,
       )
     }
 
     if (typeof source.path !== 'string' || source.path === '') {
-      err('KB_SOURCE_MISSING_FIELD', `${at}/path`, `${source.source_id} 没有 path。`, '补上相对插件包目录的数据文件路径，例如 res/danbooru_all.csv。')
+      err(
+        'KB_SOURCE_MISSING_FIELD',
+        `${at}/path`,
+        `${source.source_id} 没有 path。`,
+        isStudio
+          ? '填工作室数据文件的位置，例如 G:/绘画工作室/绘画工作室-公开版/data/tags.sqlite。'
+          : '补上相对插件包目录的数据文件路径，例如 res/danbooru_all.csv。',
+      )
+    } else {
+      const reason = unsafeSourcePath(source.path, { allowAbsolute: isStudio })
+      if (reason) {
+        err(
+          'CONFIG_PATH_UNSAFE',
+          `${at}/path`,
+          `路径不安全：${reason}（实际值 ${JSON.stringify(source.path)}）`,
+          isStudio
+            ? '填本机上的真实文件路径，可以是绝对路径（如 G:/…/data/tags.sqlite），但不能是 URL 或含 .. 的路径。'
+            : '改成相对插件包目录的普通路径，例如 res/danbooru_all.csv。',
+        )
+      }
     }
 
-    if (source.format !== undefined && !LOCAL_FORMATS.includes(source.format)) {
+    if (isStudio) {
+      // 工作室词库不需要 format / column_map / delimiter：列名由适配器按契约读取。
+      // 但用户如果硬写了一个，要明确告诉他不生效，而不是默默忽略。
+      if (source.format !== undefined && source.format !== null && source.format !== 'sqlite') {
+        warn(
+          'KB_SOURCE_FIELD_IGNORED',
+          `${at}/format`,
+          `${source.source_id} 是 studio_sqlite 数据源，format = ${JSON.stringify(source.format)} 不会生效。`,
+          '删掉 format；studio_sqlite 的列结构由适配器按 en/category/post_count 契约读取。',
+        )
+      }
+      if (source.column_map !== undefined) {
+        warn(
+          'KB_SOURCE_FIELD_IGNORED',
+          `${at}/column_map`,
+          `${source.source_id} 是 studio_sqlite 数据源，column_map 不会生效。`,
+          '删掉 column_map；只有在导入 CSV 时才需要列映射。',
+        )
+      }
+    }
+
+    if (!isStudio && source.format !== undefined && !LOCAL_FORMATS.includes(source.format)) {
       err(
         'KB_SOURCE_MISSING_FIELD',
         `${at}/format`,

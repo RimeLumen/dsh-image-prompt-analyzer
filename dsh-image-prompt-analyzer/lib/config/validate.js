@@ -8,7 +8,7 @@ const VALIDATE_CODES = Object.freeze({
 })
 
 export const SUPPORTED_SCHEMA_VERSIONS = Object.freeze({
-  'knowledge-base': Object.freeze(['2.0']),
+  'knowledge-base': Object.freeze(['2.0', '2.1']),
   'model-profile': Object.freeze(['1.0']),
   preset: Object.freeze(['1.0']),
 })

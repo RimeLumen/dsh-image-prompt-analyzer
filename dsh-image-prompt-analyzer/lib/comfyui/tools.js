@@ -10,6 +10,7 @@ import { ROLE_VALUES, resolveSemanticChanges } from './edits.js'
 import { classesInPrompt } from './build.js'
 import { RUN_STATES } from './runs.js'
 import { LAUNCHER_ACTION_VALUES } from './launcher.js'
+import { checkPromptDelivery } from './prompt-check.js'
 
 const STATE_FILTER = {
   type: 'object',
@@ -601,6 +602,16 @@ export function createComfyToolSpecs(runtime) {
           },
           workflow_path: { type: 'string', description: '工作流 JSON 的绝对路径。' },
           workflow: { type: 'object', description: '直接传入工作流对象；与上面两项三选一。' },
+          expected_positive: {
+            type: 'string',
+            description:
+              '可选：你打算让模型收到的正向文本（通常是插件给出的 Caption）。传了就逐字比对文本节点里的内容，' +
+              '不一致会指出第一个不同的位置。没传就只报告链路结构。',
+          },
+          expected_negative: {
+            type: 'string',
+            description: '可选：期望的负向文本。与 expected_positive 同一套比对规则。',
+          },
         },
         additionalProperties: false,
       },
@@ -640,11 +651,22 @@ export function createComfyToolSpecs(runtime) {
         } catch {
           templateSupport = mossTemplateSupport(null)
         }
+        // 文本核对：只比一次，结果同时进返回值和诊断，免得两处算出不同的东西。
+        const promptCheck = checkPromptDelivery(workflow, {
+          expectedPositive: args.expected_positive ?? null,
+          expectedNegative: args.expected_negative ?? null,
+        })
         return {
           ...report,
           bindings,
           prompt_enhancer: { ...enhancer, comfyui: templateSupport },
-          diagnostics: [...report.diagnostics, ...bindings.diagnostics, ...enhancer.diagnostics],
+          prompt_check: promptCheck,
+          diagnostics: [
+            ...report.diagnostics,
+            ...bindings.diagnostics,
+            ...enhancer.diagnostics,
+            ...promptCheck.diagnostics,
+          ],
         }
       }),
     },

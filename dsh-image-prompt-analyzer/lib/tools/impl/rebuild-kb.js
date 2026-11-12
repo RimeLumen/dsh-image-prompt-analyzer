@@ -6,6 +6,10 @@ const DEFAULT_LIMIT = 500
 
 const MAX_LIMIT = 20000
 
+// local_file 是插件目录里的词表文件；studio_sqlite 是外部只读的工作室词库。
+// 两者都能重建，但 studio_sqlite 的重建会按源库指纹做幂等判断。
+const REBUILDABLE_TYPES = Object.freeze(['local_file', 'studio_sqlite'])
+
 function clampLimit(value) {
   if (!Number.isInteger(value) || value <= 0) return DEFAULT_LIMIT
   return Math.min(value, MAX_LIMIT)
@@ -45,7 +49,7 @@ export async function runRebuildKnowledgeBase(runtime, args = {}) {
   const selected = requested === null
     ? enabledSources
     : enabledSources.filter((source) => requested.includes(String(source.source_id)))
-  const rebuildable = selected.filter((source) => String(source.type) === 'local_file')
+  const rebuildable = selected.filter((source) => REBUILDABLE_TYPES.includes(String(source.type)))
 
   if (rebuildable.length === 0) {
     diagnostics.push(
@@ -55,9 +59,9 @@ export async function runRebuildKnowledgeBase(runtime, args = {}) {
         config_file: 'knowledge-base',
         field_path: '/sources',
         message: requested === null
-          ? '配置里没有启用任何 local_file 数据源，没有可重建的内容。'
-          : `指定的数据源 ${requested.join(', ')} 里没有已启用的 local_file 数据源。`,
-        suggested_fix: '在 configs/knowledge-base.default.json 的 sources[] 里加一条 type: "local_file"、enabled: true 的本地文件源。',
+          ? `配置里没有启用任何可重建的数据源（${REBUILDABLE_TYPES.join(' / ')}），没有可重建的内容。`
+          : `指定的数据源 ${requested.join(', ')} 里没有已启用的可重建数据源（${REBUILDABLE_TYPES.join(' / ')}）。`,
+        suggested_fix: '在 configs/knowledge-base.default.json 的 sources[] 里加一条 type: "local_file" 或 type: "studio_sqlite"、enabled: true 的源。',
       }),
     )
     return envelope({
@@ -78,15 +82,22 @@ export async function runRebuildKnowledgeBase(runtime, args = {}) {
         logger: runtime.logger,
         limit: null,
         dryRun,
+        force: source.force === true,
         categories: config.categories ?? null,
       })
       diagnostics.push(...result.diagnostics)
       reports.push({
         source_id: String(source.source_id),
+        type: String(source.type),
         ok: true,
         rows: dryRun ? result.would_import : result.imported,
         skipped: result.skipped,
         removed: result.removed ?? 0,
+        unchanged: result.unchanged === true,
+        fingerprint: result.fingerprint ?? null,
+        user_categories: result.user_categories ?? 0,
+        studio_categories: result.studio_categories ?? 0,
+        studio_category_links: result.studio_category_links ?? 0,
         duration_ms: Date.now() - startedAt,
         diagnostics: result.diagnostics,
       })
@@ -102,10 +113,16 @@ export async function runRebuildKnowledgeBase(runtime, args = {}) {
       diagnostics.push(diagnostic(item))
       reports.push({
         source_id: String(source.source_id),
+        type: String(source.type),
         ok: false,
         rows: 0,
         skipped: 0,
         removed: 0,
+        unchanged: false,
+        fingerprint: null,
+        user_categories: 0,
+        studio_categories: 0,
+        studio_category_links: 0,
         duration_ms: Date.now() - startedAt,
         diagnostics: [item],
       })
@@ -116,6 +133,7 @@ export async function runRebuildKnowledgeBase(runtime, args = {}) {
     sources: reports.length,
     succeeded: reports.filter((item) => item.ok).length,
     failed: reports.filter((item) => !item.ok).length,
+    unchanged: reports.filter((item) => item.unchanged).length,
     rows: reports.reduce((sum, item) => sum + item.rows, 0),
     skipped: reports.reduce((sum, item) => sum + item.skipped, 0),
     removed: reports.reduce((sum, item) => sum + item.removed, 0),
@@ -153,6 +171,6 @@ function defaultExtra({ dryRun, limit }) {
     dry_run: dryRun,
     limit,
     sources: [],
-    totals: { sources: 0, succeeded: 0, failed: 0, rows: 0, skipped: 0, removed: 0, duration_ms: 0 },
+    totals: { sources: 0, succeeded: 0, failed: 0, unchanged: 0, rows: 0, skipped: 0, removed: 0, duration_ms: 0 },
   }
 }

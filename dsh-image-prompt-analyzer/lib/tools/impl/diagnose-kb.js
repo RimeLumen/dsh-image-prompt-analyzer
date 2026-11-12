@@ -38,7 +38,8 @@ export async function runDiagnoseKnowledgeBase(runtime, args = {}) {
   const content = inspectContent({ handle, config })
   diagnostics.push(...content.diagnostics)
 
-  const sources = inspectSources({ config, onlySource })
+  // 数据源体检要读外部 SQLite 词库并算指纹，所以是异步的。
+  const sources = await inspectSources({ config, onlySource, handle })
   diagnostics.push(...sources.diagnostics)
 
   const hasError = diagnostics.some((item) => item.severity === SEVERITY.ERROR)
@@ -53,7 +54,9 @@ export async function runDiagnoseKnowledgeBase(runtime, args = {}) {
       sources: sources.sources,
       lookup_mode: kb.mode,
       local_sources: kb.localSourceIds,
-      note: '知识库是纯本地的：本工具不联网，也不读取或上传图片。',
+      studio_sources: kb.studioSourceIds ?? [],
+      studio_fallback: kb.studioFallback === true,
+      note: '知识库是纯本地的：本工具不联网，也不读取或上传图片。studio_sqlite 只读打开，源库不会被写入。',
     },
   })
 }

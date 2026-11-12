@@ -132,6 +132,7 @@ const CORE_TOOL_PROPERTIES = {
     'include_negative',
     'pose_control',
     'include_ir',
+    'explain_terms',
     'save_experience',
     'layout',
     'caption_language',
@@ -182,7 +183,9 @@ const CORE_TOOL_SCHEMA_SHA256 = {
   // 只对 caption 档生效），工具描述补上 prompt_format 的说明。
   // 2026-11-10 有意更新：增加 caption_language 参数（en / zh-CN，只对 caption 档生效），
   // 描述里补一句「中文由视觉阶段直接产出、改语言要重新分析」。其余参数未动。
-  analyze_image_prompt: '39c18403780eca443e509d4bb7d1fd3d733fff06422c31a2bb4ba4c136ddc033',
+  // 2026-11-11 有意更新：增加 explain_terms 参数（可选，默认 false），
+  // 把每个词在词库里的解释随分析结果一起返回。其余参数未动。
+  analyze_image_prompt: 'b489f2cdf4a69e03fdbddbb791a903a2160cc8b1a5f7ae342599ef33b1186385',
   validate_configs: 'c288b8347979e39b2eb3083e661c81f2e2555e3bfac948a13bc2834be17c2801',
   diagnose_knowledge_base: 'e366cbd5fddf761a42b34d27b790d867e8f2405b0523c92eeaae536427844682',
   rebuild_knowledge_base: '562b673a7a02ee57c03e7ac880d186e3f9ccb80ce3033ae560abac6ffecba6d3',
@@ -629,6 +632,8 @@ test('COMFY 错误码与规划文档 H4 的清单逐字一致', () => {
     'COMFY_EXECUTION_FAILED',
     'COMFY_OUTPUT_UNAVAILABLE',
     'COMFY_PROMPT_ENHANCER_DETECTED',
+    'COMFY_PROMPT_TEXT_MISMATCH',
+    'COMFY_PROMPT_TEXT_REWRITTEN',
   ]
   assert.deepEqual(Object.values(COMFY_CODES).sort(), [...expected].sort())
 
@@ -6079,15 +6084,53 @@ test('多人画面里，别人的外观不会被写成主体的外观', async ()
     const text = out.prompts.positive
 
     assert.equal(out.caption.ok, true)
-    // 主体是 importance 更高的 e1。
-    assert.ok(text.includes('black hair'))
-    assert.equal(text.includes('silver hair'), false)
-    assert.ok(text.includes('school uniform'))
-    assert.equal(text.includes('red coat'), false)
-    // 另一位的观察没有因此被当成"没依据"：它们只是不在这段描述里。
+    // 主体是 importance 更高的 e1：发色与服装写在她这一句里。
+    const subjectClause = out.caption.clauses.find((clause) => clause.role === 'subject')
+    assert.ok(subjectClause.text.includes('black hair'))
+    assert.ok(subjectClause.text.includes('school uniform'))
+    // 另一位的发色与服装写在她自己的那句里，不能被搬进主体那一句。
+    assert.equal(subjectClause.text.includes('silver hair'), false)
+    assert.equal(subjectClause.text.includes('red coat'), false)
+    const otherClause = out.caption.clauses.find((clause) => clause.role === 'other_subject')
+    assert.ok(otherClause, '另一个人应当有自己的一句')
+    assert.ok(otherClause.text.includes('silver hair'))
+    assert.ok(otherClause.text.includes('red coat'))
+    // 两位都在画面里，且都写进了描述——不是"另一个人被丢掉"。
     const others = out.fact_ledger.records.filter((item) => item.entity_id === 'e2')
     assert.ok(others.length > 0)
-    for (const record of others) assert.equal(record.in_caption, false)
+    for (const record of others) assert.equal(record.in_caption, true)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('两个人都在画面里时，关系句不会把别人的动作算到主体头上', async () => {
+  const { moss, dataDir } = await loadMossProfile()
+  try {
+    const ir = {
+      schema_version: '1.0',
+      image: { width: 1024, height: 1024 },
+      entities: [
+        { entity_id: 'e1', kind: 'person', label: 'girl', count: 1, importance: 0.9 },
+        { entity_id: 'e2', kind: 'person', label: 'woman', count: 1, importance: 0.5 },
+        { entity_id: 'e3', kind: 'object', label: 'umbrella', importance: 0.3 },
+      ],
+      relations: [
+        { relation_id: 'r1', type: 'holding', from: 'e2', to: 'e3', description: 'right hand holds the umbrella handle', confidence: 0.8, status: 'confirmed' },
+      ],
+      features: [
+        { category: 'subject', key: 'count', value: '2girls', confidence: 0.9, status: 'confirmed' },
+        { category: 'appearance', key: 'hair_color', value: 'black hair', entity_id: 'e1', confidence: 0.8, status: 'confirmed' },
+      ],
+      uncertainties: [],
+    }
+    const out = await compilePrompt({ ir, profile: moss.config, kb: null })
+    const text = out.prompts.positive
+    const relationClause = out.caption.clauses.find((clause) => clause.role === 'relation')
+    assert.ok(relationClause)
+    // 伞在 e2 手里，不能在句子里读成主体 e1 拿的。
+    assert.match(relationClause.text, /the other woman/i)
+    assert.equal(relationClause.text.startsWith('Her '), false)
   } finally {
     rmSync(dataDir, { recursive: true, force: true })
   }

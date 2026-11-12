@@ -96,9 +96,14 @@ Analyze this image with the illustrious profile:
 |---|---|
 | `analyze_image_prompt` | 主入口。图片 → IR → 提示词。返回标签版、描述版、抑制提示词、槽位明细与逐条观察的诊断。MOSS 档案给 Caption；传 `layout: true` 额外排一份 JSON Layout（元素 + 坐标）。 |
 | `preview_model_profile` | 把一个示例 IR 过一遍档案编译器，**不调用**任何视觉模型 —— 在真正花一次调用之前，先看清这套档案会编译出什么。 |
+| `search_tags` | 按中文或英文关键词检索本地词表：规范名、中文名、别名、来源与命中方式、常用度、是否废弃。可按分类、翻译状态、档案收窄。 |
+| `explain_tag` | 解释一个词：中文名、别名、原生分类、kind，以及它在模型词表与补充词典里各自的说法。 |
+| `compile_tag_basket` | 把用户挑好的一串词按档案编译成提示词，逐词回报命中、未命中、别名归一与来自哪条源。 |
+| `write_caption` | 一段中文或英文的画面需求 → 一段 Caption（只服务 `caption` 档，即 MOSS）。不扩写、不润色、不拆标签、不翻译。 |
+| `revise_caption` | 已有 Caption + 一句「从 A 改成 B」→ 只替换那一处属性值，其余字符逐字不动。目标不唯一时报歧义并列出候选，不替用户选。 |
 | `validate_configs` | 对随包配置与用户覆盖配置做静态校验：JSON 语法、schema 版本、必需字段、ID 重复、悬空引用。 |
-| `diagnose_knowledge_base` | SQLite 知识库能不能打开、可不可写、schema 版本是什么、里面有多少标签、最近一次导入是什么时候。 |
-| `rebuild_knowledge_base` | 把本地标签 CSV 重新导入 SQLite。按 source 幂等 upsert，事务内完成，支持 `dry_run`。 |
+| `diagnose_knowledge_base` | SQLite 知识库能不能打开、可不可写、schema 版本是什么、里面有多少标签、最近一次导入是什么时候；外部工作室词库另报指纹与过期状态。 |
+| `rebuild_knowledge_base` | 从配置声明的数据源重建 SQLite：`local_file`（CSV / XLSX / DOCX / PDF / TXT / MD）与只读打开的 `studio_sqlite`。按 source 幂等 upsert，事务内完成，支持 `dry_run`。 |
 | `manage_experiences` | 浏览 / 检索 / 评分 / 导出 / 导入本地经验库。 |
 
 ---
@@ -187,14 +192,25 @@ Animagine XL 4.0 刻意留在标签路径上 —— 它的 Model Card 限定它�
 
 ## 知识库数据
 
-两个标签 CSV **随仓库一起发布**：
+两个模型词表 CSV **随仓库一起发布**，另有一份中文对照表：
 
 | 文件 | 行数 | 大小 |
 |---|---|---|
 | `res/illustrious_tags_no_artist.csv` | 58,519 | 1.6 MB |
 | `res/anima_tags_no_artist.csv` | 66,058 | 1.7 MB |
+| `res/studio-zh.csv` | 42,455 | 3.1 MB |
 
-它们是 Danbooru 风格的导出，格式为 `tag,native_category,aliases,post_count`，已去掉画师行。`configs/knowledge-base.default.json` 把它们列为 `sources[]`；`data/knowledge.sqlite3` 在首次使用时由它们建出来。
+前两个是 Danbooru 风格的导出，格式为 `tag,native_category,aliases,post_count`，已去掉画师行。第三个是中文对照表，格式为 `tag,zh_name,aliases,translation_status,deprecated,tag_group,native_category,post_count`，从绘画工作室公开发行版导出的通用词典里取中文名与翻译状态，作为**补充词典**注册（`role: "supplement"`）：它只负责把中文检索到英文规范名、解释一个词的来历，不参与模型词表的判定，也不会往标签版里塞词。
+
+`configs/knowledge-base.default.json` 把它们列为 `sources[]`。知识库文件不放在插件包里 —— 插件包会被整包替换，放在里面的数据升级一次就没了。默认位置是系统用户数据目录：
+
+| 平台 | 路径 |
+|---|---|
+| Windows | `%LOCALAPPDATA%\dsh-image-prompt-analyzer\knowledge.sqlite3` |
+| macOS | `~/Library/Application Support/dsh-image-prompt-analyzer/knowledge.sqlite3` |
+| 其它 | `$XDG_DATA_HOME/dsh-image-prompt-analyzer/knowledge.sqlite3` |
+
+要换位置就设 `DSH_IMAGE_PROMPT_ANALYZER_DATA_DIR`，或在配置里写 `storage.data_dir`（绝对路径）。老版本留在包内 `data/` 的库会在首次启动时自动搬过去。
 
 新克隆之后，先建一次库：
 
@@ -209,6 +225,16 @@ npm run import-tags
 ```
 
 想用自己的标签表，把 `sources[].path` 指向包内任意 CSV 再重建一次即可。表里没有的标签不会被当成无效 —— 它们只是留在描述版里，而不会被确认为标签。
+
+### 接入绘画工作室词库（可选）
+
+绘画工作室导出的 `tags.sqlite` 不是第四种模型词表，而是一个**补充词典源**（`type: "studio_sqlite"`）。插件只用只读连接打开它（`PRAGMA query_only = 1`），把它整份搬进自己的库，之后日常查询只读本地快照 —— 原文件被移走、被删掉，检索和解释照样能用，只是不会再更新。
+
+```bash
+node scripts/import-tags.mjs --type studio_sqlite --file "G:/绘画工作室/绘画工作室-公开版-2026-11-10/data/tags.sqlite"
+```
+
+导入按源库 sha256 指纹判定：指纹没变就直接跳过，变了一整份在单事务里替换。**失败不会留下半份数据**，旧快照原样保留。中文检索、分类树、标签解释、中文词篮编译都不依赖这个文件是否还在。工作室数据不随本仓库分发，得你自己指向本机文件。
 
 ## 检查一次编译
 

@@ -16,10 +16,14 @@ export const LOOKUP_MATCH = Object.freeze({
 
 export const LOOKUP_SOURCE = Object.freeze({
   LOCAL: 'local',
+  // 工作室补充词典。它和模型词表不是一回事：模型词表决定"这个词能不能进提示词"，
+  // 补充词典只解释"这个词是什么意思、中文叫什么"。
+  STUDIO: 'studio',
 })
 
 export const LOOKUP_MODES = Object.freeze({
   LOCAL_ONLY: 'local_only',
+  LOCAL_WITH_STUDIO: 'local_with_studio',
 })
 
 export const LOOKUP_REASONS = Object.freeze({
@@ -30,6 +34,7 @@ export const LOOKUP_REASONS = Object.freeze({
   KB_EMPTY: 'kb_empty',
   NO_LOCAL_SOURCES: 'no_local_sources',
   KB_UNAVAILABLE: 'kb_unavailable',
+  STUDIO_FALLBACK: 'studio_fallback',
 })
 
 /**
@@ -63,6 +68,10 @@ export function makeLookupResult(query, normalized, fields) {
     tag: fields.tag ?? null,
     via_alias: fields.via_alias ?? false,
     match: fields.match ?? (fields.status === LOOKUP_STATUS.HIT ? (fields.via_alias ? LOOKUP_MATCH.ALIAS : LOOKUP_MATCH.CANONICAL) : LOOKUP_MATCH.NONE),
+    // 命中来自哪一份数据源、靠哪条路命中。P0-4 要求每个命中都能答出这两个问题：
+    // 同一个词在 illustrious-tags 和 studio 里都有时，报告必须能说清用的是哪一份。
+    source_id: fields.tag?.source_id ?? null,
+    fallback: fields.fallback === true,
   }
   if (fields.alias !== undefined) result.alias = fields.alias
   if (fields.detail !== undefined) result.detail = fields.detail

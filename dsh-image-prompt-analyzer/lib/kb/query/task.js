@@ -72,10 +72,11 @@ export function createTaskLookup({
       if (found) {
         return makeLookupResult(query, normalized, {
           status: LOOKUP_STATUS.HIT,
-          source: LOOKUP_SOURCE.LOCAL,
+          source: found.source ?? LOOKUP_SOURCE.LOCAL,
           tag: found.tag,
           via_alias: found.via_alias,
           alias: found.alias,
+          fallback: found.fallback === true,
         })
       }
       return makeLookupResult(query, normalized, {
@@ -116,10 +117,11 @@ export function createTaskLookup({
           const result = found
             ? makeLookupResult(raw, normalized, {
                 status: LOOKUP_STATUS.HIT,
-                source: LOOKUP_SOURCE.LOCAL,
+                source: found.source ?? LOOKUP_SOURCE.LOCAL,
                 tag: found.tag,
                 via_alias: found.via_alias,
                 alias: found.alias,
+                fallback: found.fallback === true,
               })
             : makeLookupResult(raw, normalized, { status: LOOKUP_STATUS.MISS, reason: LOOKUP_REASONS.LOCAL_MISS })
           seen.set(normalized, result)
@@ -154,6 +156,8 @@ export function createTaskLookup({
           lookups,
           queryable,
           local_sources: localSourceIds,
+          studio_sources: healthSnapshot?.studio_sources ?? [],
+          studio_fallback: healthSnapshot?.studio_fallback === true,
           health: healthSnapshot?.state ?? null,
         }
       },

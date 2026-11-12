@@ -5,7 +5,15 @@ import { dirname } from 'node:path'
 import { SEVERITY, diagnostic } from '../diagnostics.js'
 import { MIGRATE_CODES } from '../config/migrate.js'
 import { NULL_LOGGER } from '../log.js'
-import { KB_DDL, KB_MIGRATION_1_TO_2, KB_POST_MIGRATION_INDEXES, KB_SCHEMA_VERSION, META_KEYS } from './schema.js'
+import {
+  KB_DDL,
+  KB_MIGRATION_1_TO_2,
+  KB_MIGRATION_2_0_TO_2_1,
+  KB_MIGRATION_2_1_TO_2_2,
+  KB_POST_MIGRATION_INDEXES,
+  KB_SCHEMA_VERSION,
+  META_KEYS,
+} from './schema.js'
 
 export const KB_DB_CODES = Object.freeze({
   SQLITE_UNAVAILABLE: 'KB_SQLITE_UNAVAILABLE',
@@ -187,6 +195,50 @@ export async function openKnowledgeDatabase({
   return handle
 }
 
+function applyMigration(handle, { from, to, sql, logger }) {
+  try {
+    handle.transaction(() => {
+      handle.exec(sql)
+      writeMeta(handle, META_KEYS.SCHEMA_VERSION, to)
+    })
+  } catch (error) {
+    handle.close()
+    throw new KnowledgeBaseError(KB_DB_CODES.SCHEMA_APPLY_FAILED, `知识库结构 ${from} → ${to} 迁移失败：${error?.message ?? error}`, {
+      detail: error?.code ?? null,
+      suggestedFix: '备份 data/knowledge.sqlite3 后删库重建（数据库已被回滚到迁移前状态）。',
+    })
+  }
+  logger.info(`知识库表结构已从 ${from} 迁移到 ${to}。`)
+}
+
+function ensureColumn(handle, table, column, type) {
+  const columns = handle.all(`PRAGMA table_info(${table})`).map((row) => String(row.name))
+  if (columns.length === 0) return false
+  if (columns.includes(column)) return false
+  handle.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
+  return true
+}
+
+// 加列迁移要按"缺哪列补哪列"做，不能直接 ALTER：
+// 打开可写库时 KB_DDL 会先跑一遍（CREATE TABLE IF NOT EXISTS），
+// 于是"表存在但缺列"和"表刚按最新定义建好、列已齐"这两种情况都会走到这里。
+// 直接 ALTER 在后一种情况会报 duplicate column name。
+function applyColumnMigration(handle, { from, to, table, columns, logger }) {
+  try {
+    handle.transaction(() => {
+      for (const [column, type] of Object.entries(columns)) ensureColumn(handle, table, column, type)
+      writeMeta(handle, META_KEYS.SCHEMA_VERSION, to)
+    })
+  } catch (error) {
+    handle.close()
+    throw new KnowledgeBaseError(KB_DB_CODES.SCHEMA_APPLY_FAILED, `知识库结构 ${from} → ${to} 迁移失败：${error?.message ?? error}`, {
+      detail: error?.code ?? null,
+      suggestedFix: '备份 data/knowledge.sqlite3 后删库重建（数据库已被回滚到迁移前状态）。',
+    })
+  }
+  logger.info(`知识库表结构已从 ${from} 迁移到 ${to}。`)
+}
+
 function ensureSchemaVersion(handle, { logger }) {
   const existing = readMeta(handle, META_KEYS.SCHEMA_VERSION)
   if (existing === null) {
@@ -197,21 +249,12 @@ function ensureSchemaVersion(handle, { logger }) {
     return []
   }
   if (existing === KB_SCHEMA_VERSION) return []
+
+  const diagnostics = []
+
   if (existing === '1.0') {
-    try {
-      handle.transaction(() => {
-        handle.exec(KB_MIGRATION_1_TO_2)
-        writeMeta(handle, META_KEYS.SCHEMA_VERSION, KB_SCHEMA_VERSION)
-      })
-    } catch (error) {
-      handle.close()
-      throw new KnowledgeBaseError(KB_DB_CODES.SCHEMA_APPLY_FAILED, `知识库结构 1.0 → 2.0 迁移失败：${error?.message ?? error}`, {
-        detail: error?.code ?? null,
-        suggestedFix: '备份 data/knowledge.sqlite3 后删库重建（数据库已被回滚为 1.0）。',
-      })
-    }
-    logger.info('知识库表结构已从 1.0 迁移到 2.0。')
-    return [
+    applyMigration(handle, { from: '1.0', to: '2.0', sql: KB_MIGRATION_1_TO_2, logger })
+    diagnostics.push(
       diagnostic({
         error_code: MIGRATE_CODES.SCHEMA_VERSION_MIGRATED,
         severity: SEVERITY.INFO,
@@ -219,17 +262,120 @@ function ensureSchemaVersion(handle, { logger }) {
         message: '知识库表结构 1.0 已迁移到 2.0：tags 新增 zh_name/kind，prompt_experiences 新增 target_profile/slots_snapshot。',
         suggested_fix: null,
       }),
-    ]
+    )
   }
+
+  if (readMeta(handle, META_KEYS.SCHEMA_VERSION) === '2.0') {
+    // 2.0 → 2.1 只加列。旧行的 deprecated 落到 0、tag_group/translation_status 落到 NULL，
+    // 于是 2.0 时代已有的查询结果在 2.1 上一字不变。
+    applyMigration(handle, { from: '2.0', to: '2.1', sql: KB_MIGRATION_2_0_TO_2_1, logger })
+    diagnostics.push(
+      diagnostic({
+        error_code: MIGRATE_CODES.SCHEMA_VERSION_MIGRATED,
+        severity: SEVERITY.INFO,
+        field_path: 'schema_meta.kb_schema_version',
+        message: '知识库表结构 2.0 已迁移到 2.1：tags 新增 deprecated/tag_group/translation_status，新增 source_meta 与 source_user_categories。',
+        suggested_fix: null,
+      }),
+    )
+  }
+
+  if (readMeta(handle, META_KEYS.SCHEMA_VERSION) === '2.1') {
+    // 2.1 → 2.2 只加两张新表。分类树与标签归属不进 tag_categories，
+    // 所以编译器的槽位判断与 2.1 完全一致。
+    applyMigration(handle, { from: '2.1', to: '2.2', sql: KB_MIGRATION_2_1_TO_2_2, logger })
+    diagnostics.push(
+      diagnostic({
+        error_code: MIGRATE_CODES.SCHEMA_VERSION_MIGRATED,
+        severity: SEVERITY.INFO,
+        field_path: 'schema_meta.kb_schema_version',
+        message: '知识库表结构 2.1 已迁移到 2.2：新增 studio_categories 与 studio_category_tags（工作室分类树与标签归属）。',
+        suggested_fix: null,
+      }),
+    )
+  }
+
+  if (readMeta(handle, META_KEYS.SCHEMA_VERSION) === '2.2') {
+    // 2.2 → 2.3 只给 source_meta 加两列。旧行 role 为 NULL，按 type 推断，
+    // 所以已有库的"模型词表 / 补充词典"划分在升级后不变。
+    applyColumnMigration(handle, {
+      from: '2.2',
+      to: KB_SCHEMA_VERSION,
+      table: 'source_meta',
+      columns: { role: 'TEXT', coverage: 'TEXT' },
+      logger,
+    })
+    diagnostics.push(
+      diagnostic({
+        error_code: MIGRATE_CODES.SCHEMA_VERSION_MIGRATED,
+        severity: SEVERITY.INFO,
+        field_path: 'schema_meta.kb_schema_version',
+        message: `知识库表结构 2.2 已迁移到 ${KB_SCHEMA_VERSION}：source_meta 新增 role（模型词表 / 补充词典）与 coverage（这次导入落了哪些字段）。`,
+        suggested_fix: null,
+      }),
+    )
+    return diagnostics
+  }
+
+  const current = readMeta(handle, META_KEYS.SCHEMA_VERSION)
   handle.close()
   throw new KnowledgeBaseError(
     KB_DB_CODES.SCHEMA_VERSION_MISMATCH,
-    `数据库表结构版本是 ${existing}，本插件需要 ${KB_SCHEMA_VERSION}。`,
+    `数据库表结构版本是 ${current}，本插件需要 ${KB_SCHEMA_VERSION}。`,
     {
-      detail: `db=${existing} plugin=${KB_SCHEMA_VERSION}`,
+      detail: `db=${current} plugin=${KB_SCHEMA_VERSION}`,
       suggestedFix: '这个库来自更新或更旧的插件版本；备份后删库重建，再用 rebuild_knowledge_base 重新导入。',
     },
   )
+}
+
+/**
+ * 以"只读 + query_only"打开一个**外部**源库（例如绘画工作室的 tags.sqlite）。
+ *
+ * 三道锁叠在一起，任何一道单独失效都还有下一道：
+ *   1. 打开方式 readOnly —— SQLite 层面就是只读句柄，写操作直接报 SQLITE_READONLY；
+ *   2. PRAGMA query_only = 1 —— 连接层面拒绝一切写语句（含临时表之外的 DDL）；
+ *   3. 这里返回的 handle.readonly 为 true，插件内部写路径（import / rebuild）看到它会拒绝。
+ *
+ * 这个函数不建表、不迁移、不写 meta：源库是别人的文件，插件只能读。
+ */
+export async function openSourceDatabase({ path, logger = NULL_LOGGER } = {}) {
+  if (!path || typeof path !== 'string') {
+    throw new KnowledgeBaseError(KB_DB_CODES.OPEN_FAILED, '外部源库路径为空。', {
+      suggestedFix: '检查该数据源配置里的 path。',
+    })
+  }
+  if (!existsSync(path)) {
+    throw new KnowledgeBaseError(KB_DB_CODES.OPEN_FAILED, `外部源库不存在：${path}`, {
+      detail: 'FILE_MISSING',
+      suggestedFix: '确认路径指向真实的 SQLite 文件；相对路径以插件包目录为基准。',
+    })
+  }
+
+  const { DatabaseSync } = await loadSqlite()
+  let raw
+  try {
+    raw = new DatabaseSync(path, { readOnly: true })
+  } catch (error) {
+    throw new KnowledgeBaseError(KB_DB_CODES.OPEN_FAILED, `以只读方式打开外部源库失败：${error?.message ?? error}`, {
+      detail: error?.code ?? null,
+      suggestedFix: '确认文件确实是 SQLite 数据库、没有被其它进程独占，并且当前账户有读权限。',
+    })
+  }
+
+  try {
+    raw.exec('PRAGMA query_only = 1')
+  } catch (error) {
+    try {
+      raw.close()
+    } catch {
+    }
+    throw new KnowledgeBaseError(KB_DB_CODES.OPEN_FAILED, `无法为外部源库启用 query_only 保护：${error?.message ?? error}`, {
+      suggestedFix: '这个文件可能不是 SQLite 数据库，或已被损坏。',
+    })
+  }
+
+  return createHandle(raw, { path, readonly: true, logger })
 }
 
 export function readMeta(handle, key) {

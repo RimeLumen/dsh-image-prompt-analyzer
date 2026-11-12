@@ -13,6 +13,7 @@ import {
   toJsonl,
 } from '../lib/experience/store.js'
 import { createConfigStore } from '../lib/config/index.js'
+import { resolveDataPath, scriptDataDir } from '../lib/paths.js'
 
 const PACKAGE_DIR = dirname(dirname(fileURLToPath(import.meta.url)))
 
@@ -48,13 +49,14 @@ function resolveFromPackage(value) {
 async function resolvePaths(args) {
   if (args.db) return { dbPath: resolveFromPackage(args.db), exportPath: args.out ? resolveFromPackage(args.out) : null }
 
-  const store = createConfigStore({ configDir: resolve(PACKAGE_DIR, 'configs'), dataDir: resolve(PACKAGE_DIR, 'data') })
+  const dataDir = scriptDataDir()
+  const store = createConfigStore({ configDir: resolve(PACKAGE_DIR, 'configs'), dataDir })
   await store.get()
   const kbConfig = store.getKnowledgeBase()
-  const dbPath = resolveFromPackage(String(kbConfig?.storage?.database_path ?? 'data/knowledge.sqlite3'))
+  const dbPath = resolveDataPath(kbConfig?.storage?.database_path ?? 'knowledge.sqlite3', dataDir)
   const exportPath = args.out
     ? resolveFromPackage(args.out)
-    : resolveFromPackage(String(kbConfig?.storage?.experience_export_path ?? 'data/experiences/experiences.jsonl'))
+    : resolveDataPath(kbConfig?.storage?.experience_export_path ?? 'experiences/experiences.jsonl', dataDir)
   return { dbPath, exportPath }
 }
 

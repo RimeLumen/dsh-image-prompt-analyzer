@@ -135,6 +135,7 @@ export async function runAnalyzePipeline(runtime, args = {}) {
       diagnostics,
       profileRequest,
       include_ir: args.include_ir !== false,
+      include_explanations: args.explain_terms === true,
       presetResult,
       snapshot,
       analysis,

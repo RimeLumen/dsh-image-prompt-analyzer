@@ -20,6 +20,29 @@ const PATH_FIELDS = Object.freeze([
   '/sources/*/path',
 ])
 
+/**
+ * 外部源库的路径校验。
+ *
+ * 插件自己的库必须待在插件目录里（storage.database_path 走 unsafeRelativePath）。
+ * 但 studio_sqlite 指向的是**别人的**数据文件，它本来就在插件目录之外——
+ * 工作室装在 G 盘、插件装在 D 盘是常态。所以这里只拦真正危险的写法：
+ * URL、盘符相对路径、以及任何带 `..` 段的路径。
+ */
+export function unsafeSourcePath(value, { allowAbsolute = false } = {}) {
+  if (typeof value !== 'string' || value.trim() === '') return '路径为空'
+  const raw = value.trim()
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw)) return '不允许 URL，只能是文件路径'
+  const normalized = raw.replace(/\\/g, '/')
+  if (normalized.split('/').some((segment) => segment === '..')) return '不允许包含 .. 段'
+  if (allowAbsolute) {
+    const absolute = /^[a-zA-Z]:\//.test(normalized) || normalized.startsWith('/') || /^\/\/[^/]/.test(normalized)
+    if (absolute) return null
+    if (/^~\//.test(normalized)) return '不允许 ~ 家目录写法'
+    return null
+  }
+  return unsafeRelativePath(value)
+}
+
 export function forEachPathField(document, visit) {
   for (const template of PATH_FIELDS) {
     const parts = template.split('/').slice(1)

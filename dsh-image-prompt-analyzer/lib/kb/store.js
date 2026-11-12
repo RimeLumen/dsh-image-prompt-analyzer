@@ -23,17 +23,28 @@ export function upsertTag(handle, record) {
   const zhName = typeof record.zh_name === 'string' && record.zh_name.trim() ? record.zh_name.trim() : null
   const kind = typeof record.kind === 'string' && record.kind.trim() ? record.kind.trim() : 'general'
   const updatedAt = record.updated_at ?? nowIso()
+  // deprecated 只有"来源明说了"才算数。CSV 词表没有这一列，它不该把
+  // 一个已经标记废弃的词洗回可用状态——所以这里额外带一个声明标志进 upsert。
+  const deprecatedDeclared = record.deprecated === undefined || record.deprecated === null ? 0 : 1
+  const deprecated = deprecatedDeclared === 1 ? (Number(record.deprecated) === 1 ? 1 : 0) : 0
+  const tagGroup = typeof record.tag_group === 'string' && record.tag_group.trim() ? record.tag_group.trim() : null
+  const translationStatus = typeof record.translation_status === 'string' && record.translation_status.trim()
+    ? record.translation_status.trim()
+    : null
 
   const row = handle.get(
-    `INSERT INTO tags (name, canonical_name, source_id, native_category, post_count, zh_name, kind, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO tags (name, canonical_name, source_id, native_category, post_count, zh_name, kind, updated_at, deprecated, tag_group, translation_status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (source_id, name) DO UPDATE SET
-       canonical_name  = excluded.canonical_name,
-       native_category = COALESCE(excluded.native_category, tags.native_category),
-       post_count      = COALESCE(excluded.post_count, tags.post_count),
-       zh_name         = COALESCE(excluded.zh_name, tags.zh_name),
-       kind            = CASE WHEN excluded.kind = 'general' THEN tags.kind ELSE excluded.kind END,
-       updated_at      = excluded.updated_at
+       canonical_name     = excluded.canonical_name,
+       native_category    = COALESCE(excluded.native_category, tags.native_category),
+       post_count         = COALESCE(excluded.post_count, tags.post_count),
+       zh_name            = COALESCE(excluded.zh_name, tags.zh_name),
+       kind               = CASE WHEN excluded.kind = 'general' THEN tags.kind ELSE excluded.kind END,
+       updated_at         = excluded.updated_at,
+       deprecated         = CASE WHEN ? = 1 THEN excluded.deprecated ELSE tags.deprecated END,
+       tag_group          = COALESCE(excluded.tag_group, tags.tag_group),
+       translation_status = COALESCE(excluded.translation_status, tags.translation_status)
      RETURNING id`,
     name,
     canonical,
@@ -43,6 +54,10 @@ export function upsertTag(handle, record) {
     zhName,
     kind,
     updatedAt,
+    deprecated,
+    tagGroup,
+    translationStatus,
+    deprecatedDeclared,
   )
   return Number(row.id)
 }
@@ -154,6 +169,32 @@ export function findTag(handle, name, { sourceIds = null } = {}) {
   return decorateTag(handle, rows[0])
 }
 
+/**
+ * 按中文名查标签。
+ *
+ * 中文名不是标签身份的一部分：`女仆` 与 `maid` 是同一条标签的两种写法，
+ * 真正进提示词的永远是英文 name。所以这个查询只在"用户拿中文来找词"时用，
+ * 命中的结果仍带着英文 name，调用方据此渲染。
+ *
+ * 只认精确匹配：中文名是人工审过的译名，模糊匹配会命中一堆近义词，
+ * 而用户要的是"这个词对应哪条标签"，不是"哪些词像它"。
+ */
+export function findTagByZh(handle, zh, { sourceIds = null, includeDeprecated = false } = {}) {
+  const text = String(zh ?? '').trim()
+  if (text === '') return null
+  const params = [text]
+  let sql = 'SELECT * FROM tags WHERE zh_name = ?'
+  if (sourceIds && sourceIds.length > 0) {
+    sql += ` AND source_id IN (${sourceIds.map(() => '?').join(',')})`
+    params.push(...sourceIds)
+  }
+  if (!includeDeprecated) sql += ' AND COALESCE(deprecated, 0) = 0'
+  sql += ' ORDER BY post_count DESC NULLS LAST, name ASC LIMIT 1'
+  const rows = handle.all(sql, ...params)
+  if (rows.length === 0) return null
+  return decorateTag(handle, rows[0])
+}
+
 export function findTagById(handle, id) {
   const row = handle.get('SELECT * FROM tags WHERE id = ?', Number(id))
   return row ? decorateTag(handle, row) : null
@@ -192,6 +233,11 @@ function tagFromRow(row, categories) {
     zh_name: row.zh_name === null || row.zh_name === undefined ? null : String(row.zh_name),
     kind: row.kind === null || row.kind === undefined ? 'general' : String(row.kind),
     updated_at: String(row.updated_at),
+    deprecated: row.deprecated === null || row.deprecated === undefined ? 0 : Number(row.deprecated),
+    tag_group: row.tag_group === null || row.tag_group === undefined ? null : String(row.tag_group),
+    translation_status: row.translation_status === null || row.translation_status === undefined
+      ? null
+      : String(row.translation_status),
     categories,
   }
 }
@@ -314,6 +360,139 @@ export function countTags(handle) {
   return Number(row?.n ?? 0)
 }
 
+function parseJsonColumn(value, fallback) {
+  if (value === null || value === undefined) return fallback
+  try {
+    const parsed = JSON.parse(String(value))
+    return parsed ?? fallback
+  } catch {
+    return fallback
+  }
+}
+
+/**
+ * 记下"这个数据源上次导入时是什么样"。
+ *
+ * fingerprint 是源文件 sha256，它是幂等判断的唯一依据：指纹没变就跳过，
+ * 不看时间戳、不看文件大小——时间戳会因为拷贝而变，大小会因为无关改动而变。
+ */
+export function upsertSourceMeta(handle, meta = {}) {
+  const sourceId = String(meta.source_id ?? 'unknown')
+  handle.run(
+    `INSERT INTO source_meta (
+      source_id, kind, role, adapter, adapter_version, declared_path, resolved_path,
+      fingerprint, bytes, schema_hash, row_count, deprecated_count, imported_row_count,
+      translation_status_counts, tag_group_counts, imported_at, coverage, extra
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (source_id) DO UPDATE SET
+      kind = excluded.kind,
+      role = excluded.role,
+      adapter = excluded.adapter,
+      adapter_version = excluded.adapter_version,
+      declared_path = excluded.declared_path,
+      resolved_path = excluded.resolved_path,
+      fingerprint = excluded.fingerprint,
+      bytes = excluded.bytes,
+      schema_hash = excluded.schema_hash,
+      row_count = excluded.row_count,
+      deprecated_count = excluded.deprecated_count,
+      imported_row_count = excluded.imported_row_count,
+      translation_status_counts = excluded.translation_status_counts,
+      tag_group_counts = excluded.tag_group_counts,
+      imported_at = excluded.imported_at,
+      coverage = excluded.coverage,
+      extra = excluded.extra`,
+    sourceId,
+    meta.kind ?? null,
+    meta.role ?? null,
+    meta.adapter ?? null,
+    meta.adapter_version ?? null,
+    meta.declared_path ?? null,
+    meta.resolved_path ?? null,
+    meta.fingerprint ?? null,
+    meta.bytes ?? null,
+    meta.schema_hash ?? null,
+    meta.row_count ?? null,
+    meta.deprecated_count ?? null,
+    meta.imported_row_count ?? null,
+    meta.translation_status_counts ? JSON.stringify(meta.translation_status_counts) : null,
+    meta.tag_group_counts ? JSON.stringify(meta.tag_group_counts) : null,
+    meta.imported_at ?? nowIso(),
+    meta.coverage ? JSON.stringify(meta.coverage) : null,
+    meta.extra ? JSON.stringify(meta.extra) : null,
+  )
+  return readSourceMeta(handle, sourceId)
+}
+
+export function readSourceMeta(handle, sourceId) {
+  const row = handle.get('SELECT * FROM source_meta WHERE source_id = ?', String(sourceId))
+  if (!row) return null
+  return {
+    source_id: String(row.source_id),
+    kind: row.kind === null ? null : String(row.kind),
+    role: row.role === null || row.role === undefined ? null : String(row.role),
+    adapter: row.adapter === null ? null : String(row.adapter),
+    adapter_version: row.adapter_version === null ? null : String(row.adapter_version),
+    declared_path: row.declared_path === null ? null : String(row.declared_path),
+    resolved_path: row.resolved_path === null ? null : String(row.resolved_path),
+    fingerprint: row.fingerprint === null ? null : String(row.fingerprint),
+    bytes: row.bytes === null ? null : Number(row.bytes),
+    schema_hash: row.schema_hash === null ? null : String(row.schema_hash),
+    row_count: row.row_count === null ? null : Number(row.row_count),
+    deprecated_count: row.deprecated_count === null ? null : Number(row.deprecated_count),
+    imported_row_count: row.imported_row_count === null ? null : Number(row.imported_row_count),
+    translation_status_counts: parseJsonColumn(row.translation_status_counts, []),
+    tag_group_counts: parseJsonColumn(row.tag_group_counts, []),
+    imported_at: row.imported_at === null ? null : String(row.imported_at),
+    coverage: parseJsonColumn(row.coverage, null),
+    extra: parseJsonColumn(row.extra, null),
+  }
+}
+
+export function listSourceMetas(handle) {
+  return handle.all('SELECT source_id FROM source_meta ORDER BY source_id ASC').map((row) => readSourceMeta(handle, row.source_id))
+}
+
+/**
+ * 源库自带的用户分组（工作室那 1208 个中文分组）。
+ *
+ * 它们不进 tag_categories：那是插件的 15 个内部分类，混进来会污染槽位判断。
+ * 单独存一份，只用于"这个词属于哪些分组"的展示与检索。
+ */
+export function replaceSourceUserCategories(handle, sourceId, categories = []) {
+  handle.run('DELETE FROM source_user_categories WHERE source_id = ?', String(sourceId))
+  let written = 0
+  for (const category of categories) {
+    const name = String(category?.name ?? '').trim()
+    if (!name) continue
+    handle.run(
+      `INSERT INTO source_user_categories (source_id, name, sort_order, tag_count, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (source_id, name) DO UPDATE SET
+         sort_order = excluded.sort_order,
+         tag_count = excluded.tag_count,
+         updated_at = excluded.updated_at`,
+      String(sourceId),
+      name,
+      Number(category?.sort_order ?? 0),
+      Number(category?.tag_count ?? 0),
+      nowIso(),
+    )
+    written += 1
+  }
+  return written
+}
+
+export function listSourceUserCategories(handle, sourceId, { limit = 500 } = {}) {
+  return handle
+    .all(
+      'SELECT name, sort_order, tag_count FROM source_user_categories WHERE source_id = ? ORDER BY sort_order ASC, name ASC LIMIT ?',
+      String(sourceId),
+      Number(limit),
+    )
+    .map((row) => ({ name: String(row.name), sort_order: Number(row.sort_order ?? 0), tag_count: Number(row.tag_count ?? 0) }))
+}
+
 export function knowledgeStats(handle) {
   const summary = handle.get(
     `SELECT
@@ -346,4 +525,228 @@ export function knowledgeStats(handle) {
     by_source: bySource,
     last_tag_update: summary?.newest === null || summary?.newest === undefined ? null : String(summary.newest),
   }
+}
+
+/**
+ * 写入工作室分类树与标签归属（整源替换，调用方负责包事务）。
+ *
+ * 两张表都不参与编译：`tag_categories` 决定一个词进哪个槽位，
+ * 这里的分类只决定"在浏览树里挂在哪个分支下"，两套编号互不干涉。
+ */
+export function replaceStudioCategories(handle, sourceId, { categories = [], links = [] } = {}) {
+  const id = String(sourceId)
+  handle.run('DELETE FROM studio_categories WHERE source_id = ?', id)
+  handle.run('DELETE FROM studio_category_tags WHERE source_id = ?', id)
+
+  const now = nowIso()
+  let categoryCount = 0
+  for (const category of categories) {
+    const studioId = String(category?.studio_id ?? '').trim()
+    const name = String(category?.name ?? '').trim()
+    if (!studioId || !name) continue
+    handle.run(
+      `INSERT INTO studio_categories (source_id, studio_id, name, parent_id, sort_order, depth, tag_count, origin, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (source_id, studio_id) DO UPDATE SET
+         name = excluded.name,
+         parent_id = excluded.parent_id,
+         sort_order = excluded.sort_order,
+         depth = excluded.depth,
+         tag_count = excluded.tag_count,
+         origin = excluded.origin,
+         updated_at = excluded.updated_at`,
+      id,
+      studioId,
+      name,
+      category?.parent_id === null || category?.parent_id === undefined ? null : String(category.parent_id),
+      Number(category?.sort_order ?? 0),
+      Number(category?.depth ?? 0),
+      Number(category?.tag_count ?? 0),
+      category?.origin === null || category?.origin === undefined ? null : String(category.origin),
+      now,
+    )
+    categoryCount += 1
+  }
+
+  let linkCount = 0
+  for (const link of links) {
+    const studioId = String(link?.studio_id ?? '').trim()
+    const tagName = String(link?.tag_name ?? '').trim()
+    if (!studioId || !tagName) continue
+    handle.run(
+      `INSERT INTO studio_category_tags (source_id, studio_id, tag_name, studio_tag_id)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT (source_id, studio_id, tag_name) DO NOTHING`,
+      id,
+      studioId,
+      tagName,
+      link?.studio_tag_id === null || link?.studio_tag_id === undefined ? null : String(link.studio_tag_id),
+    )
+    linkCount += 1
+  }
+
+  return { categories: categoryCount, links: linkCount }
+}
+
+export function countStudioCategories(handle, sourceId) {
+  const row = handle.get(
+    `SELECT (SELECT COUNT(*) FROM studio_categories WHERE source_id = ?) AS categories,
+            (SELECT COUNT(*) FROM studio_category_tags WHERE source_id = ?) AS links`,
+    String(sourceId),
+    String(sourceId),
+  )
+  return { categories: Number(row?.categories ?? 0), links: Number(row?.links ?? 0) }
+}
+
+/**
+ * 把所有工作室源的分类行一次读出来，用于在内存里拼整棵树。
+ *
+ * 与 `listStudioCategories` 的区别是不按 source 与 parent 过滤：迁移导入之后树已经
+ * 完整落在库里，运行时拼树只需要一遍全表扫描，不必再碰工作室目录。
+ */
+export function listAllStudioCategories(handle, { limit = 20000 } = {}) {
+  return handle
+    .all(
+      `SELECT source_id, studio_id, name, parent_id, sort_order, depth, tag_count, origin
+         FROM studio_categories
+        ORDER BY depth ASC, sort_order ASC, name ASC
+        LIMIT ?`,
+      Number(limit),
+    )
+    .map((row) => ({
+      source_id: String(row.source_id),
+      studio_id: String(row.studio_id),
+      name: String(row.name),
+      parent_id: row.parent_id === null || row.parent_id === undefined ? null : String(row.parent_id),
+      sort_order: Number(row.sort_order ?? 0),
+      depth: Number(row.depth ?? 0),
+      tag_count: Number(row.tag_count ?? 0),
+      origin: row.origin === null || row.origin === undefined ? null : String(row.origin),
+    }))
+}
+
+export function countAllStudioCategories(handle) {
+  const row = handle.get(
+    `SELECT (SELECT COUNT(*) FROM studio_categories) AS categories,
+            (SELECT COUNT(*) FROM studio_category_tags) AS links`,
+  )
+  return { categories: Number(row?.categories ?? 0), links: Number(row?.links ?? 0) }
+}
+
+/**
+ * 列出分类树的一层。
+ *
+ * `parentId` 省略 = 整棵树（按深度、排序、名字排好）；传 `null` = 只要根；传具体 ID = 只要它的直接子节点。
+ */
+export function listStudioCategories(handle, sourceId, { parentId, limit = 2000 } = {}) {
+  const id = String(sourceId)
+  const params = [id]
+  let where = 'source_id = ?'
+  if (parentId === null) {
+    where += ' AND parent_id IS NULL'
+  } else if (parentId !== undefined) {
+    where += ' AND parent_id = ?'
+    params.push(String(parentId))
+  }
+  params.push(Number(limit))
+  return handle
+    .all(
+      `SELECT studio_id, name, parent_id, sort_order, depth, tag_count, origin
+         FROM studio_categories
+        WHERE ${where}
+        ORDER BY depth ASC, sort_order ASC, name ASC
+        LIMIT ?`,
+      ...params,
+    )
+    .map((row) => ({
+      studio_id: String(row.studio_id),
+      name: String(row.name),
+      parent_id: row.parent_id === null || row.parent_id === undefined ? null : String(row.parent_id),
+      sort_order: Number(row.sort_order ?? 0),
+      depth: Number(row.depth ?? 0),
+      tag_count: Number(row.tag_count ?? 0),
+      origin: row.origin === null || row.origin === undefined ? null : String(row.origin),
+    }))
+}
+
+/**
+ * 从根一路走到某个分类，返回 [{studio_id, name}]。
+ *
+ * 断链（父节点不在表里）就地停下，不抛错——分类树是用来浏览的，不是用来做完整性证明的。
+ */
+export function studioCategoryPath(handle, sourceId, studioId, { maxDepth = 32 } = {}) {
+  const id = String(sourceId)
+  const chain = []
+  let cursor = String(studioId)
+  for (let step = 0; step < maxDepth; step += 1) {
+    const row = handle.get(
+      'SELECT studio_id, name, parent_id FROM studio_categories WHERE source_id = ? AND studio_id = ?',
+      id,
+      cursor,
+    )
+    if (!row) break
+    chain.unshift({ studio_id: String(row.studio_id), name: String(row.name) })
+    if (row.parent_id === null || row.parent_id === undefined) break
+    cursor = String(row.parent_id)
+  }
+  return chain
+}
+
+export function findStudioCategoriesByName(handle, sourceId, query, { limit = 20 } = {}) {
+  const text = String(query ?? '').trim()
+  if (!text) return []
+  // LIKE 的通配符要转义，否则搜 "50%" 会变成模糊匹配。转义符用 !，SQL 里对应 ESCAPE '!'。
+  const escaped = text.replace(/[!%_]/g, (char) => `!${char}`)
+  return handle
+    .all(
+      `SELECT studio_id, name, parent_id, sort_order, depth, tag_count, origin
+         FROM studio_categories
+        WHERE source_id = ?
+          AND name LIKE ? ESCAPE '!'
+        ORDER BY CASE WHEN name = ? THEN 0 ELSE 1 END, depth ASC, tag_count DESC, name ASC
+        LIMIT ?`,
+      String(sourceId),
+      `%${escaped}%`,
+      text,
+      Number(limit),
+    )
+    .map((row) => ({
+      studio_id: String(row.studio_id),
+      name: String(row.name),
+      parent_id: row.parent_id === null || row.parent_id === undefined ? null : String(row.parent_id),
+      depth: Number(row.depth ?? 0),
+      tag_count: Number(row.tag_count ?? 0),
+    }))
+}
+
+export function studioCategoryTagNames(handle, sourceId, studioId, { limit = 500 } = {}) {
+  return handle
+    .all(
+      `SELECT tag_name FROM studio_category_tags
+        WHERE source_id = ? AND studio_id = ?
+        ORDER BY tag_name ASC
+        LIMIT ?`,
+      String(sourceId),
+      String(studioId),
+      Number(limit),
+    )
+    .map((row) => String(row.tag_name))
+}
+
+export function studioCategoriesForTag(handle, sourceId, tagName) {
+  return handle
+    .all(
+      `SELECT l.studio_id AS studio_id, c.name AS name, c.depth AS depth
+         FROM studio_category_tags l
+         LEFT JOIN studio_categories c ON c.source_id = l.source_id AND c.studio_id = l.studio_id
+        WHERE l.source_id = ? AND l.tag_name = ?
+        ORDER BY c.depth ASC, c.name ASC`,
+      String(sourceId),
+      String(tagName),
+    )
+    .map((row) => ({
+      studio_id: String(row.studio_id),
+      name: row.name === null || row.name === undefined ? null : String(row.name),
+      depth: row.depth === null || row.depth === undefined ? null : Number(row.depth),
+    }))
 }

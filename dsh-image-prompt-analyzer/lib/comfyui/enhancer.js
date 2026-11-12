@@ -54,6 +54,14 @@ const TEXT_NODE_PATTERN =
 
 const SAMPLER_PATTERN = /^ksampler/i
 
+/**
+ * 这个 class_type 是不是"就是提示词本身"的节点。
+ * 导出出去是给 prompt-check 用的：报"谁在改写"时不能把文本节点自己也列进去。
+ */
+export function isTextNodeClass(classType) {
+  return typeof classType === 'string' && TEXT_NODE_PATTERN.test(classType)
+}
+
 function classOf(node) {
   return typeof node?.class_type === 'string' ? node.class_type : ''
 }

@@ -237,6 +237,35 @@ export async function compilePrompt({
     if (!term?.alias_from || !term?.text || term.alias_from === term.text) continue
     aliases.push({ from: term.alias_from, to: term.text })
   }
+  // 词典解释：每个词在词库里是什么。这是给人看的，不参与拼串——
+  // 提示词该写什么由 resolve 决定，这里只把"这个词的中文、来源、可信度"摊开，
+  // 免得用户对着 `maid` 猜意思，或者不知道哪些词只是补充词典的线索。
+  const explanations = []
+  for (const term of resolved.terms) {
+    const text = termText(term)
+    if (!text) continue
+    const info = term?.kb
+    const studio = info?.studio ?? null
+    if (!info && !studio) {
+      explanations.push({ tag: text, status: 'not_queried', source: null, zh: null })
+      continue
+    }
+    explanations.push({
+      tag: text,
+      status: info?.status ?? 'miss',
+      source: info?.source ?? null,
+      source_id: info?.source_id ?? studio?.source_id ?? null,
+      via_alias: info?.via_alias === true || studio?.via_alias === true,
+      canonical: info?.canonical_name ?? null,
+      zh: info?.zh_name ?? studio?.zh_name ?? null,
+      native_category: info?.native_category ?? studio?.native_category ?? null,
+      tag_group: studio?.tag_group ?? null,
+      translation_status: studio?.translation_status ?? null,
+      deprecated: studio ? studio.deprecated === true : null,
+      // 只当线索、没进编译的补充词典命中：标出来，免得被当成"模型词表认这个词"。
+      supplement_only: Boolean(studio) && info?.status === 'miss',
+    })
+  }
   const candidates = []
   for (const term of resolved.terms) {
     if (term.dropped) {
@@ -531,6 +560,11 @@ export async function compilePrompt({
       ? {
           schema_version: caption.schema_version,
           ok: caption.ok,
+          // 人物与关系有没有被句子预算挤掉。`complete:false` 时调用方拿到的不是
+          // 一份完整描述，`omitted` 里列着省掉了谁、省掉了哪几条关系。
+          complete: caption.complete,
+          omitted: caption.omitted,
+          person_refs: caption.person_refs,
           language: caption.language,
           text: caption.text,
           clauses: caption.clauses,
@@ -574,8 +608,23 @@ export async function compilePrompt({
     // 词库健康状态：可用 / 不可用 / 空库 / 目标数据源缺失 / 查询失败。
     kb_health: resolved.stats?.kb_health ?? null,
     aliases,
+    explanations,
     dropped,
     pose_control: controlAdvice,
+    // 输出约定写成一个显式字段，而不是让调用方从 register 反推。
+    // 官方 SKILL.md：「Only the caption or compiled Layout belongs in MOSS-Image's
+    // positive prompt.」所以"这次交了什么、没交什么"必须是一句话能读懂的，
+    // 免得下游自己从 slots / keywords 里拼一串标签又当成 MOSS 的输入。
+    output_contract: {
+      word_style: wordStyle,
+      register,
+      positive_is_natural_language: captionMode ? captionPositive : prosePositive,
+      // 标签版内容仍在 slots / keywords 里可回查，但它没有进正向提示词。
+      tags_in_positive: !captionMode && !prosePositive,
+      tags_available_separately: rendered.segments.length > 0,
+      layout_in_positive: layoutPositive,
+      layout_available: captionMode,
+    },
     diagnostics,
     stats: {
       terms: rendered.segments.reduce((sum, segment) => sum + segment.terms.length, 0),

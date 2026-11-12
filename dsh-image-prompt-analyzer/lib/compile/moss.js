@@ -38,6 +38,10 @@ export const MOSS_CODES = Object.freeze({
   NEGATIVE_SFW_ADDED: 'COMPILE_MOSS_NEGATIVE_SFW_ADDED',
   NEGATIVE_CONTRADICTION_REMOVED: 'COMPILE_MOSS_NEGATIVE_CONTRADICTION_REMOVED',
   NEGATIVE_TRUNCATED: 'COMPILE_MOSS_NEGATIVE_TRUNCATED',
+  // 句子预算或配置真的挡住了某些人物/关系：这份 Caption 不是完整的描述。
+  CAPTION_TRUNCATED: 'COMPILE_MOSS_CAPTION_TRUNCATED',
+  // 某个人在 IR 里没有任何外观与服装观察，写不进 Caption。这是事实缺失，不是省略。
+  CAPTION_PERSON_UNDESCRIBED: 'COMPILE_MOSS_CAPTION_PERSON_UNDESCRIBED',
 })
 
 /**
@@ -97,6 +101,9 @@ const CAPTION_SCAFFOLDING = new Set([
   'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
   'both', 'several', 'some', 'this', 'that', 'these', 'those', 'very', 'also',
   'only', 'slightly', 'partly', 'fully', 'mostly', 'together',
+  // 「画面里还有另一个人」这类引出句的骨架词。它们不描述画面内容，
+  // 是模板为了把人分开说的连接词——不该被算成"凭空补的内容"。
+  'there', 'another', 'other', 'rest', 'each', 'person', 'people',
 ])
 
 const NUMBER_WORDS = Object.freeze(['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'])
@@ -278,6 +285,165 @@ function pluralize(noun) {
   return `${noun}s`
 }
 
+/** 发色/发型类观察：只有这一种外观能拿来指人，且必须是全场独一份的。 */
+const HAIR_CLAIM = /\bhair\b|头发|长发|短发|发型/i
+
+/** 关系句开头就是一个代词时，补主语会变成「她她握着伞」，得先把它换掉。 */
+const LEADING_PRONOUN_EN = /^(she|he|they|her|his|their)\b/i
+const LEADING_PRONOUN_ZH = /^(她们|他们|她|他)/
+
+/**
+ * 把一条发色观察变成能放在名词前的形容语。
+ *
+ * 英文只认 `X hair` 与 `X-haired` 两种写法，取 `hair` 前面最后一个词当颜色：
+ * `long silver hair` → `silver-haired`。取最后一个词而不是整段，是因为
+ * `long` 说的是长度、`silver` 才是能区分两个人的那一项。
+ */
+function hairDescriptorFrom(text, language) {
+  const value = stripTail(text)
+  if (value === '') return null
+  if (language === 'zh-CN') return value
+  if (/-haired$/i.test(value)) return value.toLowerCase()
+  const match = /^(.*?)\s*hair$/i.exec(value)
+  if (!match) return null
+  const words = match[1].split(/\s+/).filter(Boolean)
+  const color = words[words.length - 1] ?? ''
+  if (color === '') return null
+  return `${color.toLowerCase()}-haired`
+}
+
+/**
+ * 画面里不止一个人时，谁都得有一个稳定的叫法。
+ *
+ * 只用两类依据：实体自己的标签（`woman`）与它自己的外观观察（`silver hair`）。
+ * 发色只有在**全场独一份**时才拿来指人——两个人都写着 `silver hair` 时，
+ * 「银发的那位」照样指不清是谁。没有可用特征时退回「另一位」，
+ * 不为了消歧去编发色、服装或左右位置。
+ */
+function buildPersonRefs({ persons, factsByEntity, language = 'en' }) {
+  const base = (Array.isArray(persons) ? persons : []).map((entity) => {
+    const id = entity?.entity_id ?? entity?.id ?? null
+    const phrase = personPhrase(entity, language)
+    const looks = factsByEntity.get(id)?.appearance ?? []
+    const hairFact = looks.find((fact) => HAIR_CLAIM.test(String(fact?.text ?? ''))) ?? null
+    return {
+      id,
+      phrase,
+      hairText: hairFact ? hairFact.text : null,
+      hair: hairFact ? hairDescriptorFrom(hairFact.text, language) : null,
+    }
+  })
+  const hairCount = new Map()
+  for (const entry of base) {
+    if (entry.hair) hairCount.set(entry.hair, (hairCount.get(entry.hair) ?? 0) + 1)
+  }
+  return base.map((entry, index) => {
+    const unique = entry.hair !== null && hairCount.get(entry.hair) === 1
+    const noun = String(entry.phrase?.noun ?? '')
+    const bare = stripZhNumerals(noun)
+    const head = bare === '' ? (language === 'zh-CN' ? '人' : 'person') : bare
+    // 没有可用特征时，第二个人不能也叫「那个女人」——两个人同名等于没有指称。
+    // 主体用 `the woman`，其余按顺序退成 `the other woman`。
+    const isPrimary = index === 0
+    const label = language === 'zh-CN'
+      ? (unique ? `${entry.hair}的${head}` : isPrimary ? head : `另一名${head}`)
+      : (unique ? `the ${entry.hair} ${head}` : isPrimary ? `the ${head}` : `the other ${head}`)
+    const otherLabel = language === 'zh-CN'
+      ? (unique ? `${entry.hair}的${head}` : `另一名${head}`)
+      : (unique ? `the ${entry.hair} ${head}` : `the other ${head}`)
+    return {
+      id: entry.id,
+      noun,
+      unique,
+      hair: unique ? entry.hair : null,
+      hairText: entry.hairText,
+      label,
+      otherLabel,
+      // 中文不用所有格标记：`银发女人右手握着伞` 比 `银发女人的右手握着伞` 更像描述。
+      possessive: language === 'zh-CN' ? label : `${label}'s`,
+      intro: language === 'zh-CN' ? `另一名${head}` : `another ${head}`,
+      pronoun: entry.phrase?.pronoun ?? (language === 'zh-CN' ? '她' : 'she'),
+      possessivePronoun: entry.phrase?.possessive ?? (language === 'zh-CN' ? '她的' : 'her'),
+    }
+  })
+}
+
+/**
+ * 把句子里的代词换成确定指称。
+ *
+ * 只在"画面里不止一个人"时调用：一个人时「她」不会指错，换成
+ * 「那个黑发女人」反而啰嗦。换的只是代词，不动句子里的任何内容词——
+ * 这一步只负责说清原来那句话指的是谁，不重新分配归属。
+ */
+function replacePronouns(text, ref, language) {
+  const value = String(text ?? '')
+  if (!ref || typeof ref.label !== 'string' || ref.label === '') return value
+  if (language === 'zh-CN') {
+    return value
+      .replace(/(她们|他们|她|他)的/g, `${ref.label}的`)
+      .replace(/(她们|他们|她|他)(?![的们])/g, ref.label)
+  }
+  return value
+    .replace(/\b(her|his|their)\b/gi, ref.possessive)
+    .replace(/\b(she|he|they)\b/gi, ref.label)
+}
+
+/**
+ * 两端都是人时，只明确"给谁"：`to her` / `给她的` 里的代词是接收方，
+ * 换成接收方的指称；其余代词仍属施动方。执行者与接收者互换是最不能犯的错。
+ */
+function replaceDirectedPronoun(text, ref, language) {
+  const value = String(text ?? '')
+  if (!ref || typeof ref.label !== 'string' || ref.label === '') return value
+  if (language === 'zh-CN') {
+    return value.replace(/(给|向|朝|递给|交给)(她|他)(?!们)/g, `$1${ref.label}`)
+  }
+  return value.replace(/\b(to|toward|towards)\s+(her|him)\b/gi, `$1 ${ref.label}`)
+}
+
+/**
+ * 中文里"放在脚边""挂在肩上"这类说法把人省掉了，中文读者默认那是前一句的主语。
+ * 多人画面里这个默认会指错人。这里把关系的另一端补成所有格，只补"谁的"，
+ * 不动物件的归属——归属本来就是 IR 里那条关系说的。
+ */
+const ZH_SPATIAL_NOUN = /([^的])(脚边|脚旁|腿边|身边|身旁|手边|手里|手中|怀里|面前|身后|旁边|肩上|膝上|头顶|脖子上|手腕上)/
+
+function attachZhPossessor(text, label) {
+  const value = String(text ?? '')
+  if (!label) return value
+  // 指称本身可能已经带「的」（`黑色短发的女人`），再拼一个所有格会变成
+  // 「黑色短发的女人的脚边」。所有格位置上把内层的「的」去掉更顺。
+  const bare = String(label).replace(/的/g, '')
+  return value.replace(ZH_SPATIAL_NOUN, `$1${bare}的$2`)
+}
+
+/**
+ * 一条关系里的代词各指谁。
+ *
+ * 顺序不能换：先钉死方向性代词（`to her` / `给她的` 指的是接收方），
+ * 再让剩下的代词落到施动方身上。反过来做会把「递给她」改成「递给施动方」，
+ * 执行者与接收者对调——那不是消歧，是把归属写反。
+ *
+ * 施动方是东西时（`棕色行李箱位于 P1 脚边`），句子里的人物代词只能指另一端：
+ * 箱子没有「脚边」，那个「她」只能是关系指向的人。
+ */
+function resolveRelationPronouns(text, { fromRef = null, toRef = null, fromIsThing = false, language = 'en' } = {}) {
+  let value = String(text ?? '')
+  // 两端都是人时只钉接收方。句子的主语已经是施动方的名字，句中的「她的」不会指错；
+  // 再替换一遍只会写成「黑发女人把黑发女人的扇子递给银发女人」——同一句里
+  // 重复两次同一个指称，比原来的代词更难读。
+  if (fromRef && toRef && fromRef.id !== toRef.id) return replaceDirectedPronoun(value, toRef, language)
+  const owner = fromIsThing ? toRef : fromRef
+  if (!owner) return value
+  return replacePronouns(value, owner, language)
+}
+
+function stripZhNumerals(text) {
+  return String(text ?? '')
+    .replace(/^[零一两二三四五六七八九十]+\s*[个名位]?/, '')
+    .trim()
+}
+
 function rankFacts(list) {
   return list
     .map((fact, index) => ({ fact, index }))
@@ -451,7 +617,7 @@ function wordForms(word) {
  * 颜色、材质、物体名一个都不在里面。所以它不会替模板放行任何补出来的内容。
  */
 const ZH_SCAFFOLD_CHARS = new Set(
-  [...'的了着和与及是在有里中上下面方面构图镜头角度背景光线风格文字姿态表情主体场景画面张这那一个她们他它穿着为被把都也很非常朝位于'],
+  [...'的了着和与及是在有里中上下面方面构图镜头角度背景光线风格文字姿态表情主体场景画面张这那一个她们他它穿着为被把都也很非常朝位于还另名画面边'],
 )
 
 /**
@@ -504,6 +670,14 @@ export function verifyCaptionGrounding({ text, facts, clauses = null, language =
   const factForms = new Set()
   for (const fact of Array.isArray(facts) ? facts : []) {
     for (const word of wordsOf(fact?.text)) {
+      factWords.add(word)
+      for (const form of wordForms(word)) factForms.add(form)
+    }
+  }
+  // 指称是模板造的，但它是从事实推出来的（`silver hair` → `silver-haired woman`）。
+  // 不把指称里的词登记进来，台账会把「那位银发的女人」报成凭空补的描述。
+  for (const label of Array.isArray(extraLabels) ? extraLabels : []) {
+    for (const word of wordsOf(label)) {
       factWords.add(word)
       for (const form of wordForms(word)) factForms.add(form)
     }
@@ -632,7 +806,10 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
   }
 
   const persons = (Array.isArray(ir?.entities) ? ir.entities : []).filter((entity) => entity?.kind === 'person')
-  const primary = rankFacts(persons.map((entity) => ({ text: '', importance: entity?.importance ?? 0, entity })))[0]?.entity ?? persons[0] ?? null
+  const rankedPersons = rankFacts(
+    persons.map((entity) => ({ text: '', importance: entity?.importance ?? 0, entity })),
+  ).map((entry) => entry.entity)
+  const primary = rankedPersons[0] ?? null
   const subject = personPhrase(primary, wantedLanguage)
   const possessive = subject?.possessive ?? (zh ? '她的' : 'their')
   const pronoun = subject?.pronoun ?? (zh ? '她' : 'they')
@@ -644,6 +821,31 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
       ? list.filter((fact) => !fact.entity_id || fact.entity_id === subject.entity_id)
       : list
     return dropContained(scoped, wantedLanguage).slice(0, budget.perSection)
+  }
+
+  // 每个人自己的外观/服装观察。指称要用的"独一份发色"只能从这些观察里来。
+  const factsByEntity = new Map()
+  for (const fact of pool) {
+    if (!fact.entity_id) continue
+    const entry = factsByEntity.get(fact.entity_id) ?? { appearance: [], clothing: [] }
+    if (fact.category === 'appearance' || fact.category === 'clothing') {
+      entry[fact.category].push(fact)
+    }
+    factsByEntity.set(fact.entity_id, entry)
+  }
+  const personRefs = buildPersonRefs({ persons: rankedPersons, factsByEntity, language: wantedLanguage })
+  const refById = new Map(personRefs.filter((ref) => ref.id).map((ref) => [ref.id, ref]))
+  const multiPerson = personRefs.length > 1
+  // 主体之外的人：关系句里必须能指名，否则「另一个女人的右手握着伞」会被写成
+  // 「她右手握着伞」——把别人的动作算到主体头上，这是描述版最严重的错法。
+  const others = personRefs.filter((ref) => ref.id && ref.id !== subject?.entity_id)
+  // 一个人都没有可用特征、也没有任何关系时，它确实写不进 Caption；但那不是
+  // "省略"，得说出来，不能让它静默消失。
+  const omitted = { persons: [], relations: [], persons_without_facts: [] }
+
+  const pickFor = (entityId, category) => {
+    const list = (byCategory.get(category) ?? []).filter((fact) => fact.entity_id === entityId)
+    return dropContained(rankFacts(list), wantedLanguage).slice(0, budget.perSection)
   }
 
   // ① 整体画面与主体
@@ -711,7 +913,33 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
     else if (backdrop) take('subject', zh ? `画面中${backdrop.text}。` : `The image shows ${withArticle(backdrop.text)}.`, [backdrop])
   }
 
-  // ② 表情（跟主体同句太挤，单独一句）
+  // ② 画面里的其他人
+  // 主体句刻意只写主体的外观。但别人不是不存在：他们的外观、穿着不写出来，
+  // 后面关系句里的「另一名女性」就没有出处，读者不知道那是谁。这里给他们各自一句。
+  //
+  // 不再有「最多两个人」的上限：上限是上一版的实现细节，第四个人被它静默吞掉了。
+  // 真正写不下时由 `take()` 记账，最后在 `omitted` 与诊断里报出来。
+  for (const entry of others) {
+    const look = pickFor(entry.id, 'appearance')
+    const wear = pickFor(entry.id, 'clothing')
+    if (look.length === 0 && wear.length === 0) {
+      omitted.persons_without_facts.push({ id: entry.id, label: entry.label })
+      continue
+    }    const bits = []
+    if (look.length > 0) bits.push(zh ? `有着${joinListZh(look.map((fact) => fact.text))}` : `with ${joinList(look.map((fact) => fact.text))}`)
+    if (wear.length > 0) bits.push(zh ? `穿着${joinListZh(wear.map((fact) => fact.text))}` : `wearing ${joinList(wear.map((fact) => withArticle(fact.text)))}`)
+    const taken = take(
+      'other_subject',
+      zh
+        ? `画面里还有${entry.intro}，${bits.join('，')}。`
+        : `There is also ${entry.intro} ${bits.join(', ')}.`,
+      [...look, ...wear],
+      [{ kind: 'entity_label', entity_id: entry.id, entity_kind: 'person' }],
+    )
+    if (!taken) omitted.persons.push(entry.label)
+  }
+
+  // ③ 表情（跟主体同句太挤，单独一句）
   const expression = pick('expression')
   if (expression.length > 0 && (subject || lead)) {
     take(
@@ -723,7 +951,7 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
     )
   }
 
-  // ③ 姿态与动作
+  // ④ 姿态与动作
   const pose = pick('pose_action').filter((fact) => !fact.relation_id)
   if (zh) {
     // 中文不逐条起句：三条姿态各起一句「姿态方面，……」读起来是清单，不是描述。
@@ -746,28 +974,68 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
     }
   }
 
-  // ④ 空间关系：谁握着什么、谁在谁身后。关系描述本身就是一句完整的话，别拆成两个名词。
-  const relations = rankFacts(pool.filter((fact) => fact.relation_id)).slice(0, budget.perSection)
+  // ⑤ 空间关系：谁握着什么、谁在谁身后。关系描述本身就是一句完整的话，别拆成两个名词。
+  //
+  // 一条关系有两个端点，两个都要用上：
+  //   - 施动方是人（`P2 的右手拿着白伞`）→ 用施动方的指称补主语；
+  //   - 施动方是东西（`棕色行李箱位于 P1 脚边`）→ 不补人物主语，但句子里的
+  //     「她」必须落到关系另一端的那个人身上，否则读者不知道是谁的脚边。
+  // 只按 `from` 决定称呼，就是上一版把「行李箱在她脚边」写成一团的原因。
+  const relationFacts = rankFacts(pool.filter((fact) => fact.relation_id))
+  // 关系不按 perSection 截：一个人一件事，四个人就是四条，那是画面的骨架。
+  // 截到三条会让第四个人的动作凭空消失。真正的上限是整段的句子预算，
+  // 由 `take()` 把关，写不下的逐条记进 `omitted.relations`。
+  const relations = relationFacts
+  const primaryRef = personRefs[0] ?? null
   for (const fact of relations) {
-    const value = zh ? stripTail(fact.text) : fact.text
-    if (zh) {
+    const fromRef = fact.entity_id ? refById.get(fact.entity_id) ?? null : null
+    const toRef = fact.target_entity_id ? refById.get(fact.target_entity_id) ?? null : null
+    const fromIsThing = fact.entity_id !== null && fact.entity_kind !== null && fact.entity_kind !== 'person'
+    // 代词归属：施动方是人就指施动方；施动方是东西时只能指另一端的那个。
+    const pronounOwner = fromRef ?? (fromIsThing ? toRef : null)
+    let value = zh ? stripTail(fact.text) : fact.text
+    if (multiPerson) value = resolveRelationPronouns(value, { fromRef, toRef, fromIsThing, language: wantedLanguage })
+    // 中文关系句常把人省成"放在脚边"，多人时得补出是谁的脚边。
+    if (zh && multiPerson && fromIsThing && toRef) value = attachZhPossessor(value, toRef.label)
+    // 补主语用谁的指称：施动方是人就用它的；施动方是东西时用主体——
+    // 但那种情况根本不补人物主语（见下面的 `fromIsThing` 分支）。
+    // 画面里只有一个人时不需要点名：主体段刚介绍过她，这里用「她的」才像人写的。
+    const label = multiPerson ? (fromRef ? fromRef.label : primaryRef?.label ?? null) : null
+    const head = zh ? label : label ? `${label}'s` : possessive
+    // 描述本身以代词开头时补主语会变成「她她握着伞」：先把代词换成指称，
+    // 换完还以代词开头（单人画面）就整句直接用。
+    if ((LEADING_PRONOUN_EN.test(value) || LEADING_PRONOUN_ZH.test(value)) && multiPerson && pronounOwner) {
+      value = replacePronouns(value, pronounOwner, wantedLanguage)
+    }
+    const stillPronoun = LEADING_PRONOUN_EN.test(value) || LEADING_PRONOUN_ZH.test(value)
+    let sentence
+    if (stillPronoun || fromIsThing) {
+      sentence = zh ? `${value}。` : `${capitalize(value)}.`
+    } else if (zh) {
       // 关系描述本身已经是完整动作（「右手握着伞柄」），补主语才成句。
-      take('relation', `${pronoun}${value}。`, [fact])
-      continue
+      sentence = `${head ?? pronoun}${value}。`
+    } else {
+      const clause = bodyPartClause(value, head ?? possessive)
+      if (clause) sentence = clause
+      else if (GERUND_START.test(value)) sentence = `${capitalize(label ?? pronoun)} is ${value}.`
+      else sentence = label ? `${capitalize(label)} ${value}.` : `${capitalize(value)}.`
     }
-    const clause = bodyPartClause(value, possessive)
-    if (clause) {
-      take('relation', clause, [fact])
-      continue
-    }
-    if (GERUND_START.test(value)) {
-      take('relation', `${capitalize(pronoun)} is ${value}.`, [fact])
-      continue
-    }
-    take('relation', `${capitalize(value)}.`, [fact])
+    const taken = take('relation', sentence, [fact])
+    if (!taken) omitted.relations.push(fact.text)
   }
 
-  // ⑤ 构图与镜头
+  // 没有外观也没有服装的人，只要在关系里出现过（谁把东西递给谁），就已经被写进
+  // 画面了——那不算省略。剩下的才是真的没东西可写。
+  const relationEntityIds = new Set()
+  for (const fact of relationFacts) {
+    if (fact.entity_id) relationEntityIds.add(fact.entity_id)
+    if (fact.target_entity_id) relationEntityIds.add(fact.target_entity_id)
+  }
+  omitted.persons_without_facts = omitted.persons_without_facts
+    .filter((entry) => !relationEntityIds.has(entry.id))
+    .map((entry) => entry.label)
+
+  // ⑥ 构图与镜头
   // 取景词（upper body / portrait / cowboy shot）本来就是修饰同一个取景框的定语，
   // 用 and 串起来会变成「一个上半身和一个肖像」。连写再补一次冠词才读得通。
   const framing = pick('composition')
@@ -790,7 +1058,7 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
     )
   }
 
-  // ⑥ 环境
+  // ⑦ 环境
   const background = pick('background')
   if (background.length > 0) {
     take(
@@ -802,7 +1070,7 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
     )
   }
 
-  // ⑦ 光照与色彩：写成「被什么光照亮」而不是「光照是 overcast daylight」——
+  // ⑧ 光照与色彩：写成「被什么光照亮」而不是「光照是 overcast daylight」——
   // 后者是标签换个说法，前者才是描述。
   const lighting = pick('lighting_color')
   if (lighting.length > 0) {
@@ -815,7 +1083,7 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
     )
   }
 
-  // ⑧ 风格：质量词与评级词不进 Caption——它们不描述画面，只描述"这张图有多好"。
+  // ⑨ 风格：质量词与评级词不进 Caption——它们不描述画面，只描述"这张图有多好"。
   if (budget.style) {
     const style = pick('quality_style').filter((fact) => !QUALITY_WORD.test(fact.text) && !RATING_WORD.test(fact.text))
     if (style.length > 0) {
@@ -829,7 +1097,7 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
     }
   }
 
-  // ⑨ 画面文字：逐字保留原语言。
+  // ⑩ 画面文字：逐字保留原语言。
   if (budget.text) {
     for (const entry of collectImageText(ir).slice(0, budget.perSection)) {
       take('text', zh ? `画面里有文字「${entry.value}」。` : `The image contains the text "${entry.value}".`, entry.facts)
@@ -840,12 +1108,17 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
   // 主体短语本身也是依据：`1girl` 是 IR 的计数标签，写成 `a girl` 只换了词形，
   // 不算补内容。把 lead 一并交给核对，免得每个 Caption 都挂一条假警报。
   const groundingFacts = lead ? [...used, { text: lead }] : used
+  // 指称是模板造的词（`the silver-haired woman` / `another man`），但每个词都回指着
+  // 一条实体标签或外观观察。不列进来，台账会把"银发的那位"当成凭空补的描述。
+  const refLabels = personRefs
+    .flatMap((ref) => [ref.label, ref.noun, ref.hair].filter(Boolean))
+    .map((item) => String(item))
   const grounding = verifyCaptionGrounding({
     text,
     facts: groundingFacts,
     clauses,
     language: wantedLanguage,
-    extraLabels: lead ? [lead] : [],
+    extraLabels: lead ? [lead, ...refLabels] : refLabels,
   })
   const dropped = pool.filter((fact) => !used.includes(fact))
   const ok = text.length > 0
@@ -874,12 +1147,43 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
     )
   }
 
+  // 写不下的东西必须说出来。句子预算把某个人、某条关系挡在外面时，报「完整」
+  // 就是在骗调用方：它会拿一份缺人缺关系的 Caption 当成完整描述。
+  const complete = omitted.persons.length === 0 && omitted.relations.length === 0
+  if (ok && !complete) {
+    diagnostics.push(
+      diagnostic({
+        error_code: MOSS_CODES.CAPTION_TRUNCATED,
+        severity: SEVERITY.WARNING,
+        message: `Caption 未写全：省略 ${omitted.persons.length} 个人物、${omitted.relations.length} 条关系（句子上限 ${budget.maxSentences}）。`,
+        suggested_fix: '把 detail_level 调高再编译，或减少画面里的实体与关系。',
+      }),
+    )
+  }
+  if (ok && omitted.persons_without_facts.length > 0) {
+    diagnostics.push(
+      diagnostic({
+        error_code: MOSS_CODES.CAPTION_PERSON_UNDESCRIBED,
+        severity: SEVERITY.INFO,
+        message: `${omitted.persons_without_facts.length} 个人物在 IR 里没有任何外观或服装观察，写不进 Caption（${omitted.persons_without_facts.join(' / ')}）。`,
+        suggested_fix: '这是观察缺失，不是描述遗漏。补上这些人的外观/服装观察才会写出来，不要为了凑齐人数去编造发色或服装。',
+      }),
+    )
+  }
+
   return {
     schema_version: MOSS_SCHEMA_VERSION,
     register: MOSS_REGISTER,
     profile: profile?.config_id ?? null,
     language: wantedLanguage,
     ok,
+    complete,
+    omitted,
+    person_refs: personRefs.map((ref) => ({
+      id: ref.id,
+      label: ref.label,
+      unique_feature: ref.unique ? ref.hair : null,
+    })),
     text,
     clauses,
     facts_used: used,
@@ -889,6 +1193,7 @@ export function composeMossCaption({ ir = null, profile = {}, facts = [], detail
       facts: pool.length,
       used: used.length,
       dropped: dropped.length,
+      persons: personRefs.length,
       sentences: sentences.length,
       clauses: clauses.length,
       chars: text.length,

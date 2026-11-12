@@ -218,7 +218,13 @@ export function collectDescriptionFacts(ir, { maxFacts = 160, maxChars = 4000, l
       category: meta.category ?? 'unsorted',
       slot: meta.slot ?? null,
       entity_id: meta.entity_id ?? null,
+      entity_kind: meta.entity_kind ?? null,
+      entity_label: meta.entity_label ?? null,
+      target_entity_id: meta.target_entity_id ?? null,
+      target_entity_kind: meta.target_entity_kind ?? null,
+      target_entity_label: meta.target_entity_label ?? null,
       relation_id: meta.relation_id ?? null,
+      relation_type: meta.relation_type ?? null,
       status: meta.status ?? 'confirmed',
       confidence: typeof meta.confidence === 'number' ? meta.confidence : null,
       importance: typeof meta.importance === 'number' ? meta.importance : null,
@@ -354,6 +360,14 @@ export function collectDescriptionFacts(ir, { maxFacts = 160, maxChars = 4000, l
     })
   }
 
+  // 关系句要能认出"这条关系是谁做的"。没有这一步，两人画面里所有人物的动作
+  // 都会挂到主体身上——`another woman holds the umbrella` 会变成"她拿着伞"。
+  const entityIndex = new Map()
+  for (const entity of Array.isArray(ir?.entities) ? ir.entities : []) {
+    const id = entity?.entity_id ?? entity?.id ?? null
+    if (typeof id === 'string' && id !== '') entityIndex.set(id, entity)
+  }
+
   for (const relation of Array.isArray(ir?.relations) ? ir.relations : []) {
     if (!relation || typeof relation !== 'object') continue
     const description = typeof relation.description === 'string' ? relation.description.trim() : ''
@@ -371,11 +385,26 @@ export function collectDescriptionFacts(ir, { maxFacts = 160, maxChars = 4000, l
         refs.push({ kind: 'entity_label', entity_id: entityId, entity_kind: null })
       }
     }
+    // `from` 是这条关系的施动方。它可能是一个人（谁拿的），也可能是一件东西
+    // （箱子放在脚边）。两种情况的写法不一样：前者要能指名，后者不该被塞一个
+    // 主语进去，否则会读成"她行李箱在脚边"。
+    const owner = typeof relation.from === 'string' ? entityIndex.get(relation.from) ?? null : null
+    // `to` 是关系的另一端，也必须带上：施动方是东西时（行李箱在脚边），
+    // 句子里那个「她」只能指 `to`——只记 `from` 的话，编译期没有任何依据
+    // 判断这个代词该落到谁头上。
+    const target = typeof relation.to === 'string' ? entityIndex.get(relation.to) ?? null : null
     push(description, {
       category: relation.category ?? 'pose_action',
       status: relation.status,
       confidence: relation.confidence,
       relation_id: relationId,
+      entity_id: owner ? (owner.entity_id ?? owner.id ?? null) : null,
+      entity_kind: owner?.kind ?? null,
+      entity_label: typeof owner?.label === 'string' ? owner.label.trim() : null,
+      target_entity_id: target ? (target.entity_id ?? target.id ?? null) : null,
+      target_entity_kind: target?.kind ?? null,
+      target_entity_label: typeof target?.label === 'string' ? target.label.trim() : null,
+      relation_type: relation.type ?? null,
       source_refs: refs,
     })
   }

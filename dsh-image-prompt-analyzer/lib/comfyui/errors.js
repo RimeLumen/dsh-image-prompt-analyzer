@@ -26,6 +26,8 @@ export const COMFY_CODES = Object.freeze({
   EXECUTION_FAILED: 'COMFY_EXECUTION_FAILED',
   OUTPUT_UNAVAILABLE: 'COMFY_OUTPUT_UNAVAILABLE',
   PROMPT_ENHANCER_DETECTED: 'COMFY_PROMPT_ENHANCER_DETECTED',
+  PROMPT_TEXT_MISMATCH: 'COMFY_PROMPT_TEXT_MISMATCH',
+  PROMPT_TEXT_REWRITTEN: 'COMFY_PROMPT_TEXT_REWRITTEN',
 })
 
 export const SUGGESTED_FIX = Object.freeze({
@@ -51,6 +53,8 @@ export const SUGGESTED_FIX = Object.freeze({
   [COMFY_CODES.EXECUTION_FAILED]: '任务跑起来了但执行失败，看节点级错误。',
   [COMFY_CODES.OUTPUT_UNAVAILABLE]: '执行成功但没有取到输出文件。确认输出节点存在且文件已落盘。',
   [COMFY_CODES.PROMPT_ENHANCER_DETECTED]: '提示词链路上有改写节点。要用逐词可追溯的 Caption / Layout，就在 ComfyUI 里把它旁路掉；插件不会自动改工作流。',
+  [COMFY_CODES.PROMPT_TEXT_MISMATCH]: '文本节点里的内容与期望不一致。把插件给出的文本重新粘一次，或确认你核对的就是这一版。',
+  [COMFY_CODES.PROMPT_TEXT_REWRITTEN]: '文本节点之后还有改写节点，最终进模型的文本在运行时才生成。要逐字确认就旁路它；不旁路时只能确认改写器的输入。',
 })
 
 export class ComfyError extends Error {

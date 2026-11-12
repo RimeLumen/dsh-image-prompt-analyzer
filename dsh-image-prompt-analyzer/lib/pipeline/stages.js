@@ -419,6 +419,7 @@ export function buildAnalysisEnvelope({
   knowledge,
   experience,
   include_ir = true,
+  include_explanations = false,
 }) {
   const all = Array.isArray(diagnostics) ? diagnostics : []
   const actionable = all.filter((item) => item?.severity !== SEVERITY.INFO)
@@ -449,6 +450,11 @@ export function buildAnalysisEnvelope({
           positive: compiled.prompts?.positive ?? '',
           negative: compiled.prompts?.negative ?? '',
         },
+        // 词典解释默认不带：它每条都要几十个字，一次分析四十个词就是一大段，
+        // 而多数时候用户只关心提示词本身。要的时候显式传 explain_terms。
+        ...(include_explanations && Array.isArray(compiled.explanations)
+          ? { explanations: compiled.explanations }
+          : {}),
         // 只有 caption 档案才有「排布格式」这一说：同一份 Caption 既可以整段喂，
         // 也可以排成 JSON Layout。它不是 prompt_style——写法仍是 Caption，
         // 变的只是这串 Caption 有没有被排成结构化元素。

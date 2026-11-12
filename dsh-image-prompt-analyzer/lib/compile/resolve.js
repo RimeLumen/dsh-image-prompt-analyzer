@@ -13,6 +13,9 @@ export const RESOLVE_CODES = Object.freeze({
   TAG_ONLY_EXCLUDED: 'COMPILE_TAG_VOCABULARY_EXCLUDED',
   LOSSY_PROJECTION: 'COMPILE_LOSSY_PROJECTION',
   UNVERIFIED_IN_TAGS: 'COMPILE_UNVERIFIED_PHRASE_IN_TAGS',
+  // 工作室补充词典认出了这个词，但它不在这个模型的词表里。
+  // 这条只解释、不背书：词照样按"未验证"处理。
+  STUDIO_HINT: 'COMPILE_STUDIO_SUPPLEMENT_HINT',
 })
 
 /**
@@ -149,6 +152,7 @@ export async function resolveTerms(terms, { kb = null, profile = {}, signal = nu
     description_only: 0,
     lossy_projections: 0,
     unmapped: 0,
+    studio_hints: 0,
     tag_sources: { kb_canonical: 0, kb_alias: 0, profile: 0, relation: 0, unverified_phrase: 0 },
     kb_health: null,
   }
@@ -206,33 +210,69 @@ export async function resolveTerms(terms, { kb = null, profile = {}, signal = nu
     }
 
     const result = byText.get(term.text) ?? null
+    // 工作室补充词典命中不算"这个模型的词表里有这个词"。它解释得清楚，
+    // 但不替模型词表背书：对编译来说等同 miss，只是额外记一条提示。
+    // 这样开了 studio 之后，只要没显式打开 fallback，分析结果一个字都不变。
+    const studioHint = result?.status === 'hit' && result.source === 'studio' ? result : null
     // 三种"没命中"必须分开：miss = 问过词表，词表里没有这个词；
     // not_queried = 我们没问（没词库、词库空、数据源没配、读库失败）。
     // 旧实现把两者都写成 skipped，于是"词库没装"和"词表没收录"在报告里长得一样。
-    const kbStatus = result?.status ?? 'not_queried'
+    const kbStatus = studioHint ? 'miss' : (result?.status ?? 'not_queried')
     term.kb = result
       ? {
-          status: result.status,
+          status: kbStatus,
           source: result.source ?? null,
+          source_id: result.source_id ?? result.tag?.source_id ?? null,
           tag_id: result.tag?.id ?? null,
-          canonical_name: result.tag?.name ?? null,
-          native_category: result.tag?.native_category ?? null,
-          categories: Array.isArray(result.tag?.categories) ? result.tag.categories : [],
-          via_alias: result.via_alias === true,
+          // 补充词典命中的分类不参与补全：那是别人的分类体系，不是这个模型的词表分类。
+          canonical_name: studioHint ? null : (result.tag?.name ?? null),
+          native_category: studioHint ? null : (result.tag?.native_category ?? null),
+          categories: studioHint || !Array.isArray(result.tag?.categories) ? [] : result.tag.categories,
+          via_alias: studioHint ? false : result.via_alias === true,
           stale: result.stale === true,
-          reason: result.reason ?? null,
+          fallback: studioHint !== null,
+          reason: studioHint ? 'studio_fallback' : (result.reason ?? null),
         }
       : {
           status: 'not_queried',
           source: null,
+          source_id: null,
           tag_id: null,
           canonical_name: null,
           native_category: null,
           categories: [],
           via_alias: false,
           stale: false,
+          fallback: false,
           reason: kb ? 'not_looked_up' : 'no_knowledge_base',
         }
+
+    if (studioHint) {
+      const zhName = studioHint.tag?.zh_name ?? null
+      const deprecated = Number(studioHint.tag?.deprecated ?? 0) === 1
+      term.kb.studio = {
+        tag_id: studioHint.tag?.id ?? null,
+        // 命中的是哪一路数据源（studio-tags 之类）。解释要能指回具体来源，
+        // 否则"补充词典认出了它"这句话无法核对。
+        source_id: studioHint.source_id ?? studioHint.tag?.source_id ?? null,
+        via_alias: studioHint.via_alias === true,
+        name: studioHint.tag?.name ?? null,
+        zh_name: zhName,
+        native_category: studioHint.tag?.native_category ?? null,
+        tag_group: studioHint.tag?.tag_group ?? null,
+        translation_status: studioHint.tag?.translation_status ?? null,
+        deprecated,
+      }
+      stats.studio_hints += 1
+      diagnostics.push(
+        diagnostic({
+          error_code: RESOLVE_CODES.STUDIO_HINT,
+          severity: SEVERITY.INFO,
+          message: `工作室词典认出了 ${term.text}${zhName ? `（${zhName}）` : ''}${deprecated ? '，但该词条在源库里已标记为废弃' : ''}。它不在当前模型的词表里，仍按未验证写法处理。`,
+          suggested_fix: null,
+        }),
+      )
+    }
 
     if (kbStatus === 'hit' && normalizeAliases && term.kb.canonical_name && term.kb.canonical_name !== term.text) {
       if (NON_EMITTABLE_TAGS.has(normalizeTagName(term.kb.canonical_name))) {

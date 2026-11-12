@@ -10,6 +10,9 @@ const HEADER_SYNONYMS = Object.freeze({
   subcategory: ['subcategory', '子类'],
   native_category: ['native_category', '类别', 'category_id'],
   post_count: ['post_count', '作品数', 'count'],
+  translation_status: ['translation_status', '翻译状态'],
+  deprecated: ['deprecated', '废弃', '已废弃'],
+  tag_group: ['tag_group', '标签分组', '分组'],
 })
 
 const FIELDS = Object.freeze([
@@ -20,6 +23,11 @@ const FIELDS = Object.freeze([
   'zh_name',
   'category',
   'subcategory',
+  // 2.3 补的三列：随包中文对照表要带翻译状态与弃用标记，
+  // 少了这三列，一份中英文对照表导进来会把已废弃的词洗回可用。
+  'translation_status',
+  'deprecated',
+  'tag_group',
 ])
 
 const DEFAULT_COLUMNS = Object.freeze({
@@ -30,6 +38,9 @@ const DEFAULT_COLUMNS = Object.freeze({
   zh_name: 4,
   category: 5,
   subcategory: 6,
+  translation_status: 7,
+  deprecated: 8,
+  tag_group: 9,
 })
 
 function normalizeHeaderName(value) {
@@ -129,7 +140,10 @@ function resolveColumnRef(ref, header) {
 function mapBySynonyms(header) {
   const mapping = {}
   for (const field of FIELDS) {
-    const found = header.findIndex((cell) => matchesSynonyms(cell, HEADER_SYNONYMS[field]))
+    // FIELDS 与 HEADER_SYNONYMS 必须同时维护：新加的列没有同义词表，
+    // 这里就会拿 undefined 去匹配，整个文件读不出来。
+    const synonyms = HEADER_SYNONYMS[field] ?? [field]
+    const found = header.findIndex((cell) => matchesSynonyms(cell, synonyms))
     if (found >= 0) mapping[field] = found
   }
   return mapping
@@ -157,6 +171,10 @@ function buildRow(cells, mapping) {
     subcategory: value('subcategory').trim() || null,
     native_category: value('native_category').trim() || null,
     post_count: postCount,
+    // 空串保持 null，交给上层决定"没有这一列"与"这一列是空的"的区别。
+    translation_status: value('translation_status').trim() || null,
+    deprecated: value('deprecated').trim() || null,
+    tag_group: value('tag_group').trim() || null,
   }
 }
 

@@ -5,15 +5,30 @@ import { isAbsolute } from 'node:path'
 import { SEVERITY, diagnostic } from '../diagnostics.js'
 import { NULL_LOGGER } from '../log.js'
 import { PACKAGE_DIR, resolveWithin } from '../paths.js'
+import {
+  STUDIO_ADAPTER,
+  STUDIO_ADAPTER_VERSION,
+  STUDIO_SOURCE_TYPE,
+  hashFile,
+  inspectStudioDatabase,
+  readStudioCategories,
+  readStudioTags,
+  readStudioUserCategories,
+} from './adapters/studio-sqlite.js'
 import { KnowledgeBaseError, openKnowledgeDatabase } from './db.js'
 import { inferTagKind, normalizeNativeCategory } from './kind.js'
+import { defaultRoleForType } from './role.js'
 import { normalizeTagName } from './normalize.js'
 import { READER_CODES } from './readers/codes.js'
 import { readLocalFile } from './readers/index.js'
 import {
   beginSync,
   finishSync,
+  readSourceMeta,
+  replaceSourceUserCategories,
+  replaceStudioCategories,
   upsertAliasBatch,
+  upsertSourceMeta,
   upsertTagBatch,
 } from './store.js'
 
@@ -25,13 +40,14 @@ export const IMPORT_CODES = Object.freeze({
   JSONL_SYNTAX: 'KB_IMPORT_JSONL_SYNTAX',
   SKIPPED_ROWS: 'KB_IMPORT_SKIPPED_ROWS',
   FILE_TOO_LARGE: 'KB_IMPORT_FILE_TOO_LARGE',
+  SOURCE_UNCHANGED: 'KB_IMPORT_SOURCE_UNCHANGED',
 })
 
 export const REBUILD_CODES = Object.freeze({
   NO_SOURCE: 'KB_REBUILD_NO_SOURCE',
 })
 
-export const SOURCE_TYPES = Object.freeze(['local_file', 'local_sqlite', 'experience_store'])
+export const SOURCE_TYPES = Object.freeze(['local_file', 'local_sqlite', STUDIO_SOURCE_TYPE, 'experience_store'])
 
 export const IMPORT_FORMATS = Object.freeze(['csv', 'xlsx', 'docx', 'pdf', 'txt', 'md'])
 
@@ -47,6 +63,11 @@ const DEFAULT_COLUMNS = Object.freeze({
   zh_name: 4,
   category: 5,
   subcategory: 6,
+  // 7/8 是 2.3 补的：随包中文对照表要带翻译状态与弃用标记，
+  // 否则一份"只有中英文"的表导进来会把已废弃的词洗回可用。
+  translation_status: 7,
+  deprecated: 8,
+  tag_group: 9,
 })
 
 const DANBOORU_NATIVE_CATEGORY_BY_ID = Object.freeze({
@@ -65,6 +86,8 @@ const HEADER_SYNONYMS = Object.freeze({
   subcategory: ['subcategory', '子类'],
   native_category: ['native_category', '类别', 'danbooru_category'],
   post_count: ['post_count', 'count', '作品数', '帖子数'],
+  translation_status: ['translation_status', '翻译状态'],
+  deprecated: ['deprecated', '废弃', '已废弃'],
 })
 
 function resolveSourcePath(sourceConfig) {
@@ -141,6 +164,9 @@ export function tagRecordFromRow(row, { sourceId, nativeCategoryMap = null, allo
   let category = null
   let subcategory = null
   let postCount = null
+  let translationStatus = null
+  let deprecated = undefined
+  let tagGroup = null
 
   if (typeof row === 'string') {
     rawTag = row
@@ -152,6 +178,9 @@ export function tagRecordFromRow(row, { sourceId, nativeCategoryMap = null, allo
     zhName = row[DEFAULT_COLUMNS.zh_name] ?? null
     category = row[DEFAULT_COLUMNS.category] ?? null
     subcategory = row[DEFAULT_COLUMNS.subcategory] ?? null
+    translationStatus = row[DEFAULT_COLUMNS.translation_status] ?? null
+    deprecated = row[DEFAULT_COLUMNS.deprecated]
+    tagGroup = row[DEFAULT_COLUMNS.tag_group] ?? null
   } else if (row && typeof row === 'object') {
     rawTag = row.tag ?? row.name ?? row.canonical_name ?? null
     aliases = toAliases(row.aliases ?? row.alias)
@@ -160,6 +189,9 @@ export function tagRecordFromRow(row, { sourceId, nativeCategoryMap = null, allo
     category = row.category ?? null
     subcategory = row.subcategory ?? null
     postCount = Number(row.post_count ?? row.count)
+    translationStatus = row.translation_status ?? null
+    deprecated = row.deprecated
+    tagGroup = row.tag_group ?? null
   }
 
   if (allowedCategories && category && !allowedCategories.has(String(category).trim())) category = null
@@ -167,6 +199,13 @@ export function tagRecordFromRow(row, { sourceId, nativeCategoryMap = null, allo
   const name = normalizeTagName(rawTag)
   if (!name) return null
   const trimmedZh = typeof zhName === 'string' && zhName.trim() ? zhName.trim() : null
+  // deprecated 保持三态：undefined（表里没这一列）/ true / false。
+  // undefined 不能落成 0，否则每次重导一份没有该列的 CSV 都会把
+  // 别处标成废弃的词洗回可用。
+  const deprecatedFlag =
+    deprecated === undefined || deprecated === null || String(deprecated).trim() === ''
+      ? undefined
+      : ['1', 'true', 'yes', 'y'].includes(String(deprecated).trim().toLowerCase())
   return {
     name,
     canonical_name: name,
@@ -177,6 +216,10 @@ export function tagRecordFromRow(row, { sourceId, nativeCategoryMap = null, allo
     kind: inferTagKind({ tag: name, native_category: nativeCategory, category, subcategory }),
     category,
     subcategory,
+    deprecated: deprecatedFlag,
+    translation_status:
+      typeof translationStatus === 'string' && translationStatus.trim() ? translationStatus.trim() : null,
+    tag_group: typeof tagGroup === 'string' && tagGroup.trim() ? tagGroup.trim() : null,
     aliases: aliases
       .map((alias) => normalizeTagName(alias))
       .filter((alias) => alias && alias !== name),
@@ -274,14 +317,48 @@ function clearSourceRows(handle, sourceId) {
   return Number(removed?.changes ?? total)
 }
 
-export async function rebuildLocalSource({ handle, sourceConfig, readText, logger = NULL_LOGGER, limit = null, dryRun = false, categories = null } = {}) {
+export async function rebuildLocalSource({
+  handle,
+  sourceConfig,
+  readText,
+  logger = NULL_LOGGER,
+  limit = null,
+  dryRun = false,
+  categories = null,
+  force = false,
+} = {}) {
   const sourceId = String(sourceConfig?.source_id ?? 'unknown')
   const type = String(sourceConfig?.type ?? '')
+
+  if (type === STUDIO_SOURCE_TYPE) {
+    const syncId = dryRun ? null : beginSync(handle, sourceId)
+    try {
+      const result = await importStudioSource({ handle, sourceConfig, logger, limit, dryRun, force })
+      if (syncId !== null) {
+        finishSync(handle, syncId, {
+          status: 'ok',
+          records: result.imported + result.aliases,
+          errorSummary: null,
+        })
+      }
+      return result
+    } catch (error) {
+      if (syncId !== null) {
+        try {
+          finishSync(handle, syncId, { status: 'failed', records: 0, errorSummary: error?.message ?? String(error) })
+        } catch (syncError) {
+          logger.warn(`记录重建失败状态时出错：${syncError?.message ?? syncError}`)
+        }
+      }
+      throw error
+    }
+  }
+
   if (type !== 'local_file') {
-    throw new KnowledgeBaseError(IMPORT_CODES.UNKNOWN_SOURCE_TYPE, `重建知识库只支持 local_file 类型的数据源，收到 ${type || '(空)'}。`, {
+    throw new KnowledgeBaseError(IMPORT_CODES.UNKNOWN_SOURCE_TYPE, `重建知识库只支持 local_file 与 ${STUDIO_SOURCE_TYPE} 类型的数据源，收到 ${type || '(空)'}。`, {
       configFile: 'knowledge-base',
       fieldPath: `/sources/${sourceId}/type`,
-      suggestedFix: '把该数据源改成 type: "local_file"，或用 scripts/import-tags.mjs 单独导入。',
+      suggestedFix: '把该数据源改成 type: "local_file" 或 "studio_sqlite"，或用 scripts/import-tags.mjs 单独导入。',
     })
   }
 
@@ -302,6 +379,251 @@ export async function rebuildLocalSource({ handle, sourceConfig, readText, logge
       logger.warn(`记录重建失败状态时出错：${syncError?.message ?? syncError}`)
     }
     throw error
+  }
+}
+
+/**
+ * 数一遍这次导入到底落下了什么。
+ *
+ * "导入完成"这句话很容易骗人：源库 42458 行，写进去 42458 行，但中文名少了一千条、
+ * 别名少了两百条，照样会打印"导入成功"。所以导入结束后直接查库，
+ * 把源侧与库侧的数字并排放进 source_meta.coverage，差在哪一句话说清楚。
+ */
+function countStoredRows(handle, sourceId) {
+  const tags = handle.get(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN zh_name IS NOT NULL AND TRIM(zh_name) <> '' THEN 1 ELSE 0 END) AS with_zh,
+            SUM(CASE WHEN COALESCE(deprecated, 0) = 1 THEN 1 ELSE 0 END) AS deprecated,
+            SUM(CASE WHEN translation_status IS NOT NULL AND TRIM(translation_status) <> '' THEN 1 ELSE 0 END) AS with_status
+       FROM tags WHERE source_id = ?`,
+    String(sourceId),
+  )
+  const aliases = handle.get('SELECT COUNT(*) AS n FROM tag_aliases WHERE source_id = ?', String(sourceId))
+  return {
+    rows: Number(tags?.total ?? 0),
+    with_zh: Number(tags?.with_zh ?? 0),
+    deprecated: Number(tags?.deprecated ?? 0),
+    with_translation_status: Number(tags?.with_status ?? 0),
+    aliases: Number(aliases?.n ?? 0),
+  }
+}
+
+export function buildCoverage(handle, sourceId, { source = {}, skipped = 0 } = {}) {
+  const stored = countStoredRows(handle, sourceId)
+  const notes = []
+  // 行数、中文名、弃用标记必须一条不多一条不少；对不上就是真的丢字段了。
+  let lost = false
+  const expectedRows = Number(source.rows ?? 0) - Number(skipped ?? 0)
+  if (source.rows !== undefined && stored.rows !== expectedRows) {
+    lost = true
+    notes.push(`源库 ${source.rows} 行，跳过 ${skipped} 行，库里有 ${stored.rows} 行。`)
+  }
+  if (source.with_zh !== undefined && stored.with_zh !== Number(source.with_zh ?? 0)) {
+    lost = true
+    notes.push(`源库 ${source.with_zh} 条有中文名，库里有 ${stored.with_zh} 条。`)
+  }
+  if (source.deprecated !== undefined && stored.deprecated !== Number(source.deprecated ?? 0)) {
+    lost = true
+    notes.push(`源库 ${source.deprecated} 条已弃用，库里有 ${stored.deprecated} 条。`)
+  }
+  // 别名是唯一允许变少的：同一别名挂两次、别名就是标签名本身，都不该存两遍。
+  // 所以它记成一条解释，而不是一条"对不上"。
+  const aliasMerged = source.aliases === undefined
+    ? 0
+    : Math.max(0, Number(source.aliases ?? 0) - stored.aliases)
+  if (source.aliases !== undefined && aliasMerged > 0) {
+    notes.push(`源库 ${source.aliases} 条别名串，库里 ${stored.aliases} 条（自指与重复已合并，同一别名不会存两遍）。`)
+  }
+  return { source, stored, skipped: Number(skipped ?? 0), alias_merged: aliasMerged, balanced: !lost, notes }
+}
+
+/**
+ * 导入一个 studio_sqlite 数据源。
+ *
+ * 三步顺序是刻意的：
+ *   1. 读源库体检 + 算指纹（此时插件库一个字节都没动）；
+ *   2. 把全部标签读进内存（读失败 = 插件库保持原样，这就是"失败保留旧快照"）；
+ *   3. 一个事务里删旧行、写新行、记指纹（中途失败整批回滚，还是旧快照）。
+ *
+ * 幂等靠指纹而不是时间戳：源文件 sha256 没变就直接跳过，返回 skipped: 'unchanged'。
+ * force 为 true 时无视指纹重导（换了分类规则、想重建分类归属时用）。
+ */
+export async function importStudioSource({
+  handle,
+  sourceConfig,
+  logger = NULL_LOGGER,
+  limit = null,
+  dryRun = false,
+  force = false,
+} = {}) {
+  const sourceId = String(sourceConfig?.source_id ?? 'unknown')
+  const startedAt = Date.now()
+  const filePath = resolveSourcePath(sourceConfig)
+  if (!filePath) {
+    throw new KnowledgeBaseError(IMPORT_CODES.FILE_MISSING, `数据源 ${sourceId} 的 path 无法解析：${sourceConfig?.path ?? '(空)'}`, {
+      configFile: 'knowledge-base',
+      fieldPath: `/sources/${sourceId}/path`,
+      suggestedFix: '填工作室数据文件的位置，例如 G:/绘画工作室/绘画工作室-公开版/data/tags.sqlite；绝对路径与插件目录内的相对路径都接受。',
+    })
+  }
+
+  const inspection = await inspectStudioDatabase({ path: filePath, logger })
+  const previous = readSourceMeta(handle, sourceId)
+  const unchanged = Boolean(previous?.fingerprint) && previous.fingerprint === inspection.fingerprint
+
+  if (unchanged && !force && !dryRun && (limit === null || limit === undefined)) {
+    return {
+      source_id: sourceId,
+      kind: 'tags',
+      adapter: STUDIO_ADAPTER,
+      path: sourceConfig?.path ?? null,
+      imported: 0,
+      aliases: 0,
+      removed: 0,
+      skipped: 0,
+      limited: 0,
+      unchanged: true,
+      fingerprint: inspection.fingerprint,
+      duration_ms: Date.now() - startedAt,
+      diagnostics: [
+        diagnostic({
+          error_code: IMPORT_CODES.SOURCE_UNCHANGED,
+          severity: SEVERITY.INFO,
+          config_file: 'knowledge-base',
+          field_path: `/sources/${sourceId}`,
+          message: `数据源 ${sourceId} 的源文件与上次导入时完全一致（sha256 未变），已跳过。`,
+          suggested_fix: null,
+        }),
+      ],
+    }
+  }
+
+  // 读阶段：全部读进内存再动库。
+  const { records, skipped, aliases: aliasCount } = await readStudioTags({
+    path: filePath,
+    sourceId,
+    limit,
+    logger,
+  })
+  if (records.length === 0) {
+    throw new KnowledgeBaseError(IMPORT_CODES.EMPTY, `数据源 ${sourceId} 里没有任何可用标签行。`, {
+      configFile: 'knowledge-base',
+      fieldPath: `/sources/${sourceId}/path`,
+      suggestedFix: '确认 tags 表不是空的，且 en 列不是全为空。',
+    })
+  }
+
+  const userCategories = sourceConfig?.import_user_categories === false
+    ? []
+    : await readStudioUserCategories({ path: filePath, logger })
+
+  // 分类树与标签归属一起读：种子文件给层级，源库给排序与成员。
+  // 关掉 import_user_categories 的人也不该被塞进一张分类树，所以同一个开关管两件事。
+  const categoryTree = sourceConfig?.import_user_categories === false
+    ? { categories: [], links: [], stats: { categories: 0, links: 0 }, diagnostics: [] }
+    : await readStudioCategories({ path: filePath, logger })
+
+  const diagnostics = [...(categoryTree.diagnostics ?? [])]
+  if (skipped > 0) {
+    diagnostics.push(
+      diagnostic({
+        error_code: IMPORT_CODES.SKIPPED_ROWS,
+        severity: SEVERITY.WARNING,
+        config_file: 'knowledge-base',
+        field_path: `/sources/${sourceId}`,
+        message: `数据源 ${sourceId} 有 ${skipped} 行的 en 为空，已跳过。`,
+        suggested_fix: '这些行在源库里就没有标签名，通常不影响检索。',
+      }),
+    )
+  }
+
+  const limited = Number.isFinite(limit) && limit > 0 && records.length > limit ? records.length - limit : 0
+
+  if (dryRun) {
+    return {
+      source_id: sourceId,
+      kind: 'tags',
+      adapter: STUDIO_ADAPTER,
+      path: sourceConfig?.path ?? null,
+      imported: 0,
+      would_import: records.length,
+      aliases: aliasCount,
+      skipped,
+      limited,
+      unchanged: false,
+      fingerprint: inspection.fingerprint,
+      user_categories: userCategories.length,
+      studio_categories: categoryTree.stats?.categories ?? 0,
+      studio_category_links: categoryTree.stats?.links ?? 0,
+      duration_ms: Date.now() - startedAt,
+      diagnostics,
+    }
+  }
+
+  const written = handle.transaction(() => {
+    const removed = clearSourceRows(handle, sourceId)
+    const result = writeRecordsInBatches(handle, records, { sourceId, logger })
+    const categories = replaceSourceUserCategories(handle, sourceId, userCategories)
+    const tree = replaceStudioCategories(handle, sourceId, categoryTree)
+    // 覆盖情况在同一个事务里数：事务外数会看到别人写进来的行。
+    const coverage = buildCoverage(handle, sourceId, {
+      source: {
+        rows: inspection.row_count,
+        with_zh: records.filter((record) => String(record.zh_name ?? '').trim() !== '').length,
+        aliases: aliasCount,
+        deprecated: inspection.deprecated_count,
+      },
+      skipped,
+    })
+    upsertSourceMeta(handle, {
+      source_id: sourceId,
+      kind: 'tags',
+      role: sourceConfig?.role ? String(sourceConfig.role) : defaultRoleForType(STUDIO_SOURCE_TYPE),
+      adapter: STUDIO_ADAPTER,
+      adapter_version: STUDIO_ADAPTER_VERSION,
+      declared_path: sourceConfig?.path ?? null,
+      resolved_path: filePath,
+      fingerprint: inspection.fingerprint,
+      bytes: inspection.bytes,
+      schema_hash: inspection.schema_hash,
+      row_count: inspection.row_count,
+      deprecated_count: inspection.deprecated_count,
+      imported_row_count: result.imported,
+      translation_status_counts: inspection.translation_status_counts,
+      tag_group_counts: inspection.tag_group_counts,
+      imported_at: new Date().toISOString(),
+      coverage,
+      extra: {
+        active_count: inspection.active_count,
+        reviewed_translation_count: inspection.reviewed_translation_count,
+        user_category_count: categories,
+        studio_category_count: tree.categories,
+        studio_category_link_count: tree.links,
+        fts_index: inspection.fts_index,
+        missing_optional: inspection.missing_optional,
+      },
+    })
+    return { ...result, removed, categories, tree, coverage }
+  })
+
+  return {
+    source_id: sourceId,
+    kind: 'tags',
+    adapter: STUDIO_ADAPTER,
+    path: sourceConfig?.path ?? null,
+    imported: written.imported,
+    aliases: written.aliases,
+    removed: written.removed,
+    skipped,
+    limited,
+    unchanged: false,
+    fingerprint: inspection.fingerprint,
+    user_categories: written.categories,
+    studio_categories: written.tree.categories,
+    studio_category_links: written.tree.links,
+    coverage: written.coverage,
+    duration_ms: Date.now() - startedAt,
+    diagnostics,
   }
 }
 
@@ -438,7 +760,40 @@ export async function importLocalFileSource({ handle, sourceConfig, readText, lo
   const written = handle.transaction(() => {
     const removed = replace ? clearSourceRows(handle, sourceId) : 0
     const result = writeRecordsInBatches(handle, limited, { sourceId, logger })
-    return { ...result, removed }
+    // 表格式数据源也记一份来源与覆盖情况：它可能是随包发布的中文对照表，
+    // 升级后要能说清"这份对照表是哪来的、覆盖了多少个词"。
+    const coverage = buildCoverage(handle, sourceId, {
+      source: {
+        rows: limited.length + skipped,
+        with_zh: limited.filter((record) => String(record.zh_name ?? '').trim() !== '').length,
+        aliases: limited.reduce((sum, record) => sum + (Array.isArray(record.aliases) ? record.aliases.length : 0), 0),
+      },
+      skipped,
+    })
+    upsertSourceMeta(handle, {
+      source_id: sourceId,
+      kind: 'tags',
+      role: sourceConfig?.role ? String(sourceConfig.role) : defaultRoleForType('local_file'),
+      adapter: 'local-file',
+      adapter_version: '1.0',
+      declared_path: sourceConfig?.path ?? null,
+      resolved_path: filePath,
+      fingerprint: hashFile(filePath),
+      bytes: statSync(filePath).size,
+      schema_hash: null,
+      row_count: limited.length + skipped,
+      deprecated_count: null,
+      imported_row_count: result.imported,
+      translation_status_counts: null,
+      tag_group_counts: null,
+      imported_at: new Date().toISOString(),
+      coverage,
+      extra: {
+        format: sourceConfig?.format ?? null,
+        limited: effectiveLimit !== null && converted.records.length > effectiveLimit ? converted.records.length - effectiveLimit : 0,
+      },
+    })
+    return { ...result, removed, coverage }
   })
   return {
     source_id: sourceId,
@@ -450,6 +805,7 @@ export async function importLocalFileSource({ handle, sourceConfig, readText, lo
     removed: written.removed,
     skipped,
     limited: effectiveLimit !== null && converted.records.length > effectiveLimit ? converted.records.length - effectiveLimit : 0,
+    coverage: written.coverage,
     diagnostics,
   }
 }
@@ -481,6 +837,21 @@ export async function importLocalSource({ handle, sourceConfig, readText, logger
         aliases: result.aliases,
         skipped: result.skipped,
         limited: result.limited,
+      })
+      diagnostics.push(...result.diagnostics)
+    } else if (type === STUDIO_SOURCE_TYPE) {
+      const result = await importStudioSource({ handle, sourceConfig, logger, limit, force: sourceConfig?.force === true })
+      Object.assign(summary, {
+        kind: result.kind,
+        adapter: result.adapter,
+        path: result.path,
+        imported: result.imported,
+        aliases: result.aliases,
+        skipped: result.skipped,
+        limited: result.limited,
+        unchanged: result.unchanged,
+        fingerprint: result.fingerprint,
+        user_categories: result.user_categories ?? 0,
       })
       diagnostics.push(...result.diagnostics)
     } else if (type === 'local_sqlite') {

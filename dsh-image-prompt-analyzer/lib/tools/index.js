@@ -6,6 +6,11 @@ import { runValidateConfigs } from './impl/validate-configs.js'
 import { runDiagnoseKnowledgeBase } from './impl/diagnose-kb.js'
 import { runRebuildKnowledgeBase } from './impl/rebuild-kb.js'
 import { runManageExperiences } from './impl/manage-experiences.js'
+import { runSearchTags } from './impl/search-tags.js'
+import { runExplainTag } from './impl/explain-tag.js'
+import { runCompileBasket } from './impl/compile-basket.js'
+import { runWriteCaption } from './impl/write-caption.js'
+import { runReviseCaption } from './impl/revise-caption.js'
 
 const DETAIL_LEVEL = { type: 'string', enum: ['minimal', 'standard', 'high'] }
 
@@ -31,6 +36,7 @@ function analyzeImagePrompt(runtime) {
   return {
     name: 'analyze_image_prompt',
     description:
+      '两种用法之一：图片反推。有图，先从图里读出看得见的事实，再按目标档案写成提示词。' +
       '把一张图片逆向成提示词，按所选目标档案的写法给出一条正向提示词与一条反向提示词。' +
       '正向只给一种形态，由档案决定：标签档（word_style=spaced）给标签流，描述档（prose）给成分句，Caption 档（caption，MOSS-Image）给一段连贯的自然语言描述，不并列几版让你挑。' +
       '返回只有正向、反向、目标档案、写法（prompt_style: tag / prose / caption）、图片尺寸，以及控制网模式下必须带走的权重与区间建议。' +
@@ -72,6 +78,12 @@ function analyzeImagePrompt(runtime) {
           type: 'boolean',
           description: '调试用：把完整 IR 一并返回。默认 false，出图与反推都不需要它——分析过程数据在本地 trace 里。',
         },
+        explain_terms: {
+          type: 'boolean',
+          description:
+            '可选：把提示词里每个词在词库里的解释一并返回（中文名、来源、是否只是补充词典的线索）。' +
+            '默认 false——分析结果本身不带这些，需要时再用 explain_tag 单查，或在这里一次要齐。',
+        },
         layout: {
           description:
             '仅 Caption 档（moss）有意义：把 Caption 排成 MOSS 的 Layout JSON。默认不排。' +
@@ -108,7 +120,7 @@ function analyzeImagePrompt(runtime) {
       additionalProperties: false,
     },
     execute: guarded('analyze_image_prompt', runtime, (rt, args) =>
-      rt.runAnalyze({ ...args, include_ir: args.include_ir === true })),
+      rt.runAnalyze({ ...args, include_ir: args.include_ir === true, explain_terms: args.explain_terms === true })),
   }
 }
 function validateConfigs(runtime) {
@@ -136,7 +148,8 @@ function diagnoseKnowledgeBase(runtime) {
     name: 'diagnose_knowledge_base',
     description:
       '诊断标签知识库：数据库能否打开且可写、表结构版本是否兼容、库里有多少标签与 kind / 分类分布、最近一次导入是什么时候、' +
-      '配置声明的本地数据文件在不在。知识库是纯本地的：本工具不联网，也不读取或上传图片。',
+      '配置声明的数据源在不在。studio_sqlite 源会额外体检源库表结构、行数与指纹是否与上次导入一致（没导过、导过但源库变了都会单独报）。' +
+      '知识库是纯本地的：本工具不联网，也不读取或上传图片。',
     parameters: {
       type: 'object',
       properties: {
@@ -152,10 +165,10 @@ function rebuildKnowledgeBase(runtime) {
   return {
     name: 'rebuild_knowledge_base',
     description:
-      '从配置声明的本地文件重建标签知识库（CSV / XLSX / DOCX / PDF / TXT / MD）。' +
+      '从配置声明的数据源重建标签知识库：local_file（CSV / XLSX / DOCX / PDF / TXT / MD）与 studio_sqlite（绘画工作室导出的 SQLite 词库，只读打开）。' +
       '复用与 scripts/import-tags.mjs 相同的读取与导入管线：按 (source_id, tag) 幂等 upsert；' +
-      '每个数据源在事务内先清空旧行再整份导入，失败回滚保留旧数据。limit 限制最多重建多少个数据源（默认 500，上限 20000），' +
-      '行级试跑请用 dry_run 或 CLI 的 --limit。',
+      '每个数据源在事务内先清空旧行再整份导入，失败回滚保留旧数据。studio_sqlite 以源库 sha256 判定是否需要重导，指纹没变就直接跳过。' +
+      'limit 限制最多重建多少个数据源（默认 500，上限 20000），行级试跑请用 dry_run 或 CLI 的 --limit。',
     parameters: {
       type: 'object',
       properties: {
@@ -237,9 +250,233 @@ function manageExperiences(runtime) {
     execute: guarded('manage_experiences', runtime, runManageExperiences),
   }
 }
+function searchTags(runtime) {
+  return {
+    name: 'search_tags',
+    description:
+      '按中文或英文关键词检索本地标签词表（这就是 search_studio_tags：一个工具同时查模型词表与工作室补充词典）。' +
+      '返回英文规范名、中文名、别名、来源、命中方式、常用度、翻译状态、是否废弃，以及模型词表重叠情况（model_overlap：模型词表里有没有同名同拼写的词）。' +
+      '两种来源分开标注：model（模型词表，决定这个词能不能进提示词）与 studio（补充词典，解释得清楚但不替模型词表背书）。' +
+      '可按工作室分类（category，名字或分类 ID）、是否废弃（deprecated）、翻译状态（translation_status）、档案（profile）过滤。' +
+      'post_count 是作品数，只说明这个词在公开图库里被用了多少次，不代表生成质量。' +
+      'scope=tree 时改查工作室分类树（视觉特征 → 画面构图与风格 → …），只返回分支路径。' +
+      '纯本地检索：不联网、不读图片、不改任何数据。',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '检索词，中文或英文均可，例如「女仆」或 maid。' },
+        limit: { type: 'integer', minimum: 1, maximum: 50, description: '最多返回多少条，默认 10。' },
+        scope: {
+          type: 'string',
+          enum: ['tags', 'tree', 'both'],
+          description: 'tags 只查标签（默认），tree 只查分类树分支，both 两边都查。',
+        },
+        include_deprecated: { type: 'boolean', description: '是否连已废弃的标签一起返回。默认 false。' },
+        deprecated: {
+          type: 'string',
+          enum: ['exclude', 'only', 'include'],
+          description: '废弃词处理：exclude 不返回（默认），only 只返回废弃词，include 一起返回。',
+        },
+        translation_status: {
+          type: 'string',
+          description: '只返回这个翻译状态的词，例如 machine_draft_1 / wiki_definition_reviewed / curated / manual。',
+        },
+        category: {
+          type: 'string',
+          description: '只返回挂在这个工作室分类下的词：可以填分类名（如「画质与媒介」）或分类 ID。需要已导入 studio_sqlite 源。',
+        },
+        profile: {
+          type: 'string',
+          description: '按档案收窄模型词表那一侧（illustrious / anima / moss）。补充词典不区分档案。',
+        },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    presentationMeta: (args, value) => ({
+      state: typeof value?.status === 'string' ? value.status : 'unknown',
+      message:
+        typeof value?.query === 'string'
+          ? `「${value.query}」查到 ${Array.isArray(value.results) ? value.results.length : 0} 条标签`
+          : null,
+      results: Array.isArray(value?.results)
+        ? value.results.slice(0, 8).map((item) => ({ tag: item.tag, zh_name: item.zh_name, source: item.source, match: item.match }))
+        : [],
+    }),
+    execute: guarded('search_tags', runtime, runSearchTags),
+  }
+}
+
+function explainTag(runtime) {
+  return {
+    name: 'explain_tag',
+    description:
+      '解释一个标签：中文名、别名、原生分类、kind、常用度、工作室分组、翻译状态、是否已废弃，以及它在模型词表与补充词典里各自的说法。' +
+      '两边都存在时分开列，因为「模型认不认」与「工作室怎么解释」是两个问题。' +
+      '传 target_profile 会额外给出按该档案渲染后的写法（例如标签档的空格写法、Caption 档的句式），不传就不猜。' +
+      '词表里没有时返回近义词建议，并说明这个词会作为自由描述进描述版、不进标签版。',
+    parameters: {
+      type: 'object',
+      properties: {
+        tag: { type: 'string', description: '要解释的标签或中文名，例如 maid / 女仆。' },
+        target_profile: { type: 'string', description: '可选：额外给出按这个档案渲染后的写法（illustrious / anima / moss）。' },
+        slot: { type: 'string', description: '可选：渲染时按哪个槽位处理，例如 general / clothing。不传就按普通标签。' },
+      },
+      required: ['tag'],
+      additionalProperties: false,
+    },
+    presentationMeta: (args, value) => ({
+      state: typeof value?.status === 'string' ? value.status : 'unknown',
+      message: value?.found === true
+        ? `「${value.query}」${value.hits?.[0]?.tag?.zh_name ? `＝${value.hits[0].tag.zh_name}` : '已收录'}`
+        : typeof value?.query === 'string'
+          ? `「${value.query}」不在词表里`
+          : null,
+      hits: Array.isArray(value?.hits)
+        ? value.hits.slice(0, 4).map((hit) => ({ source: hit.source, tag: hit.tag?.name, zh_name: hit.tag?.zh_name, via: hit.via }))
+        : [],
+      emitted: typeof value?.rendering?.emitted === 'string' ? value.rendering.emitted : null,
+    }),
+    execute: guarded('explain_tag', runtime, runExplainTag),
+  }
+}
+
+function compileTagBasket(runtime) {
+  return {
+    name: 'compile_tag_basket',
+    description:
+      '两种用法之一：基于用户标签的编写。没有图，用户给词（中英文都行），按目标档案写成提示词。' +
+      '中文创作需求先拆成词，再用 search_tags 查成英文规范名，最后交到这里编译——这是目前唯一支持的中文需求链路，不做自由文本改写。' +
+      '把用户自己挑好的一串词按指定档案编译成正向与反向提示词，不需要图片。' +
+      '复用整条编译链路：分类 → 槽位 → 词库解析 → 预算 → 渲染 → 抑制词，与图片反推得到的是同一套输出。' +
+      '每个词都回报解析状态（命中 / 未命中 / 别名归一 / 来自哪条源），未命中的词照旧保留，不替用户删词。' +
+      '中文词会先换成词库里的英文名再写进去，换过哪些逐条列出来。' +
+      '用户亲手挑的词按满重要度处理，不会被预算挤掉；只编提示词，不提交生成任务。' +
+      'Caption 档案（moss）不吃标签流：没有自然语言事实时它会直接失败并说明原因，不会替你编一段描述。',
+    parameters: {
+      type: 'object',
+      properties: {
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '词篮，最多 80 条；重复的自动去重。例如 ["1girl","long_hair","maid"]。',
+        },
+        target_profile: { type: 'string', description: '目标档案 config_id（illustrious / anima / moss）。缺省用插件配置里的默认档案。' },
+        detail_level: { ...DETAIL_LEVEL, description: '覆盖细节密度。' },
+        include_negative: { type: 'boolean', description: '是否输出抑制提示词。默认 true。' },
+        character: { type: 'string', description: '可选：角色名，按档案的 character_format 渲染；不传就不写、也不猜。' },
+        pose_control: {
+          type: 'string',
+          enum: ['none', 'openpose', 'controlnet'],
+          description: '可选：姿势由谁负责。默认 none；接骨架时姿态词会让位并给出控制网建议。',
+        },
+      },
+      required: ['tags'],
+      additionalProperties: false,
+    },
+    presentationMeta: (args, value) => ({
+      state: typeof value?.status === 'string' ? value.status : 'unknown',
+      message:
+        typeof value?.target_profile === 'string'
+          ? `${value.target_profile} · ${Array.isArray(value?.slots) ? value.slots.length : 0} 个槽位 · ${value?.stats?.terms ?? 0} 个词`
+          : null,
+      positive: typeof value?.positive === 'string' ? value.positive : null,
+      negative: typeof value?.negative === 'string' ? value.negative : null,
+    }),
+    execute: guarded('compile_tag_basket', runtime, runCompileBasket),
+  }
+}
+
+function writeCaption(runtime) {
+  return {
+    name: 'write_caption',
+    description:
+      '三种用法之三：基于自然语言需求的编写。没有图，用户给一段画面描述（中文或英文都行），按 Caption 档案（moss）写出一段连贯的自然语言正向提示词。' +
+      '与 compile_tag_basket 的分工：那个吃标签、走词表解析与槽位渲染；这个吃一句话，原样交出一段 Caption——不拆成标签，不翻译，不补人物或关系。' +
+      '用户写什么就是什么：「她的右手握着收拢的白色雨伞」「行李箱在脚边」这类归属与位置，只要需求里写了就完整保留。' +
+      '语言按需求文本判定（有汉字就是中文），与档案默认语言不一致只提醒、不翻译；MOSS 官方说明中英文都支持。' +
+      '会摘掉 masterpiece / best quality / score_9 这类冗余质量词（官方 SKILL.md 要求避免），并给出档案声明的负向词（MOSS 是四条官方基线）。' +
+      '默认正向只放这段描述，不产出标签流，也不产出 Layout JSON；只编提示词，不提交生成任务。',
+    parameters: {
+      type: 'object',
+      properties: {
+        brief: {
+          type: 'string',
+          description:
+            '画面需求，一段中文或英文描述。例如「一名成年女性穿着深蓝色长外套，站在车站雨棚下。她的右手握着收拢的白色雨伞，脚边放着棕色行李箱。」',
+        },
+        target_profile: { type: 'string', description: '目标档案 config_id。这个入口只服务 Caption 档案（moss）；缺省用插件配置里的默认档案。' },
+        language: {
+          type: 'string',
+          enum: ['en', 'zh-CN'],
+          description: '可选：期望的 Caption 语言。省略则按需求文本自动判定；与文本不一致时不翻译，按原文输出并提示。',
+        },
+        include_negative: { type: 'boolean', description: '是否输出负向提示词。默认 true。' },
+      },
+      required: ['brief'],
+      additionalProperties: false,
+    },
+    presentationMeta: (args, value) => ({
+      state: typeof value?.status === 'string' ? value.status : 'unknown',
+      message:
+        typeof value?.target_profile === 'string'
+          ? `${value.target_profile} · ${value?.language ?? 'unknown'} · ${value?.brief?.chars ?? 0} 字`
+          : null,
+      positive: typeof value?.positive === 'string' ? value.positive : null,
+      negative: typeof value?.negative === 'string' ? value.negative : null,
+    }),
+    execute: guarded('write_caption', runtime, runWriteCaption),
+  }
+}
+
+function reviseCaption(runtime) {
+  return {
+    name: 'revise_caption',
+    description:
+      '在已有 Caption 上做定点修改：给原文和一句修改要求，只改被点名的那一处，其余字符逐字不动。' +
+      '输入「只把外套颜色从深蓝改成酒红」得到「酒红色长外套」——服装类型、所属人物和其他事实都不动。' +
+      '只认带旧值的替换（「从 A 改成 B」）；只给目标值时不猜原文该动哪一处，直接报缺旧值。' +
+      '目标在原文里出现多次且没指明是谁时，不替调用方选，返回候选小句要求指明目标。' +
+      '原文本来没写这个属性时不把替换变成新增设定。只编提示词，不提交生成任务。',
+    parameters: {
+      type: 'object',
+      properties: {
+        original: {
+          type: 'string',
+          description: '要改的原文，通常是上一次生成的 Caption，原样传入。',
+        },
+        instruction: {
+          type: 'string',
+          description:
+            '一句修改要求。中文「只把外套颜色从深蓝改成酒红」，英文 "change the coat color from navy to burgundy"。',
+        },
+        target_profile: { type: 'string', description: '目标档案 config_id。这个入口只服务 Caption 档案（moss）。' },
+      },
+      required: ['original', 'instruction'],
+      additionalProperties: false,
+    },
+    presentationMeta: (args, value) => ({
+      state: typeof value?.status === 'string' ? value.status : 'unknown',
+      message:
+        value?.changed && typeof value.changed.at === 'number'
+          ? `${value.target_profile ?? 'unknown'} · 改了 ${value.changed.count} 处`
+          : typeof value?.target_profile === 'string'
+            ? `${value.target_profile} · 未修改`
+            : null,
+      positive: typeof value?.positive === 'string' ? value.positive : null,
+    }),
+    execute: guarded('revise_caption', runtime, runReviseCaption),
+  }
+}
+
 export function registerAllTools(ctx, runtime) {
   const specs = [
     analyzeImagePrompt(runtime),
+    searchTags(runtime),
+    explainTag(runtime),
+    compileTagBasket(runtime),
+    writeCaption(runtime),
+    reviseCaption(runtime),
     validateConfigs(runtime),
     diagnoseKnowledgeBase(runtime),
     rebuildKnowledgeBase(runtime),

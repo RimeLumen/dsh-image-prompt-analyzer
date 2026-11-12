@@ -18,6 +18,26 @@ MOSS 还有一层可选的 JSON Layout 输出，它不是第四种 Profile，也
 `prompt_style` 值——它是在 `caption` 之上多排一层结构化元素，用结果信封里的
 `prompt_format` 区分（`caption` / `layout_json`）。详见下面的「JSON Layout」。
 
+## 档案管写法，词表管收录
+
+这两件事在 v2.1 里是分开的，混在一起会同时搞坏两样东西：
+
+- **档案**（`configs/model-profiles/*.json`）只决定**怎么写**：标签流还是成分句、槽位顺序、
+  质量词与评分词、负向条数、权重语法、角色名格式。它不提供词条，也不判断某个词是否
+  存在于训练分布里。
+- **词表**（知识库的 `local_file` 源）决定**收不收录**。Illustrious 与 Anima 各自用自己的
+  词表，两者互不覆盖；`unknown_tag_policy` 一律是 `description_only`，即词表里没有的词
+  只写进描述、不硬塞成标签。
+
+绘画工作室的词库（`studio_sqlite`）**不是第四种模型词表**。它默认只做中文检索与解释，
+不参与编译；即使显式打开 `lookup.studio_fallback` 让它参与，命中也标 `source: "studio"`，
+不会因此把某个词算成 Illustrious 或 Anima 认识。接入它**不扩大任何一份档案的兼容性声明**：
+`source_confidence`、别名列表、负向条数、槽位规则一个都没动。
+
+Anima 与 Animagine XL 4.0 是同一份档案：`anima` 的别名里同时登记了 `animagine-xl-4.0`、
+`animaimage`、`animagine`、`animagine-xl`，`word_style` 是 `prose`。档案不按文件名猜版本，
+也不为旧名另建一份。
+
 ## 三档的差别
 
 - **`tag`（Illustrious）**：逗号分隔的 Danbooru 标签，带权重语法 `(cowboy shot:1.1)`。
@@ -34,20 +54,45 @@ CLIP 强的能力扔掉。
 
 ## MOSS Caption 的编译规则
 
+官方依据（哪条是官方写死的、哪条是从示例归纳的、哪条是本插件自己的选择）、三个
+入口的对照、以及交付核对，都在 [moss-caption.md](moss-caption.md) 里。本节只讲
+编译规则本身。
+
+### 三个入口
+
+反推、编写、局部修改是三条路，事实来源不同，不能互相顶替：
+
+- **图片反推**（`analyze_image_prompt`，`target_profile: moss`）：事实来自图片，
+  不借润色增加画面内容。
+- **自然语言需求**（`write_caption`）：事实来自用户那句话，原样成文，不扩写、
+  不润色、不补细节，只摘掉质量词并判语言。
+- **局部修改**（`revise_caption`）：事实来自原文 + 一句「从 A 改成 B」，只替换被点名
+  的那一处属性值，其余字符逐字不动；目标不唯一时报歧义并列出候选，不替用户选。
+
+`compile_tag_basket` 在 `moss` 档案下会失败（`COMPILE_BASKET_CAPTION_NEEDS_FACTS`）。
+一篮标签里没有「谁握着什么」，硬编成 Caption 只能得到一串逗号词或一段插件自己
+编的关系——两者都比直接报错危险。
+
 ### 语义顺序
 
 一段 Caption 按下面的顺序组织，缺哪类事实就跳过哪一类：
 
 1. 主体与外观、服装（同一句，外观用 `with ...` 挂在名词后）
-2. 表情
-3. 姿态与肢体动作
-4. 空间关系（谁握着什么、谁在谁身后）
-5. 构图与取景
-6. 镜头角度
-7. 背景环境
-8. 光照与色彩
-9. 艺术风格（`detail_level: minimal` 时不写）
-10. 画面里的文字（逐字保留原文）
+2. 画面里的其他人（每人一句，外观与服装各归各家；写不下时报不完整并列出省略项）
+3. 表情
+4. 姿态与肢体动作
+5. 空间关系（谁握着什么、谁在谁身后）
+6. 构图与取景
+7. 镜头角度
+8. 背景环境
+9. 光照与色彩
+10. 艺术风格（`detail_level: minimal` 时不写）
+11. 画面里的文字（逐字保留原文）
+
+关系句的归属规则：画面只有一个人时用主体代词（`Her right hand holds the umbrella
+handle.`）；有第二个人时点名归属（`The other girl's left hand holds a folded fan.`）；
+`from` 是物件时（箱子放在脚边）不补主语，直接成句。关系不经过词表校验——词表里
+没有 `holding_umbrella`，不影响「右手握着伞柄」进 Caption。
 
 ### 依据边界
 
@@ -207,6 +252,27 @@ Caption 从 IR 事实直接成句，用不上它。跳过之后 `composed` 与
 `stats.description_candidate_chars` 是 `null`。Anima 与 Illustrious 两条分支照旧，
 trace 台账也照旧读得到它们。
 
+### 输出约定
+
+结果信封里有 `output_contract`，一眼看清这次交了什么：
+
+```json
+{
+  "word_style": "caption",
+  "register": "caption",
+  "positive_is_natural_language": true,
+  "tags_in_positive": false,
+  "tags_available_separately": true,
+  "layout_in_positive": false,
+  "layout_available": true
+}
+```
+
+`tags_in_positive: false` 是说标签版内容仍在 `slots` / `keywords` 里可回查，但没进
+正向提示词；`layout_in_positive: false` 是说没要 Layout，或者要了但没编出来——两者
+用 `layout` 字段区分，`null` 是"没要"，`ok: false` 是"要了但失败"。历史结构化输出
+作为独立兼容能力保留，**不自动插入正向提示词**。
+
 ### JSON Layout
 
 MOSS 支持用 JSON 描述物体、文字与 Bounding Box。本插件提供**可选的** Layout 输出，
@@ -283,6 +349,29 @@ UI 格式不返回 `chains`，`note` 里会说明"只按节点类型扫描"。
 
 同一份检查还会报 MOSS 官方模板的版本门槛（`comfyui.t2i` / `comfyui.edit`，
 门槛分别是 0.42.0 与 0.43.0）。读不到 ComfyUI 版本时状态是 `unknown`，不猜。
+
+### 核对最终进模型的文本
+
+`comfyui_inspect_workflow` 可以带两个可选参数，把插件给出的成品和工作流里的文本
+节点逐字比对：
+
+```json
+{
+  "workflow_name": "MOSS-Image-SFT-INT8-8GB",
+  "expected_positive": "<插件给出的 Caption>",
+  "expected_negative": "worst quality, bad anatomy, watermark, jpeg artifact"
+}
+```
+
+返回的 `prompt_check.checks[]` 每个采样器每条链路一条：
+
+- `final_text` 是这条链路上最终进模型的文本。没有改写节点时它就是文本节点里的
+  内容，可以直接和期望比对；不一致报 `COMFY_PROMPT_TEXT_MISMATCH`（WARNING），
+  带 `first_difference_at` 与前后各 20 字符的片段。
+- 有改写节点时 `final_text` 是 `null`、`final_text_known` 是 `false`，并报
+  `COMFY_PROMPT_TEXT_REWRITTEN`。这时只知道改写器的输入，最终文本由它在运行时
+  生成，工作流 JSON 里看不到——不假装知道。
+- UI 格式工作流不做这条核对（连线是槽位号，追不出链路），只做改写节点扫描。
 
 ## 同一份 IR 的三档输出
 

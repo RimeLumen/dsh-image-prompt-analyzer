@@ -1,5 +1,5 @@
 
-import { PACKAGE_DIR, resolvePluginDirs } from './paths.js'
+import { PACKAGE_DIR, migrateLegacyDataDir, resolvePluginDirs } from './paths.js'
 import { createLogger } from './log.js'
 import { SEVERITY, diagnostic, fromException } from './diagnostics.js'
 import { createConfigStore, resolvePluginConfig } from './config/index.js'
@@ -23,6 +23,14 @@ export function createRuntime({ ctx, config = {}, logger: loggerOverride = null 
   if (dirs.errors.length > 0) {
     logger.warn(`以下目录配置越出插件包目录，已拒绝并回退为默认值：${dirs.errors.join(', ')}`)
   }
+  // 老版本把词库放在包内 data/ 里，升级会整包替换掉。搬到数据目录只做一次，
+  // 目标已存在的文件不动——用户后来导入的新数据不会被旧文件盖住。
+  if (dirs.dataDirSource === 'user') {
+    const migration = migrateLegacyDataDir(dirs.dataDir, { logger })
+    if (migration.migrated.length > 0) {
+      logger.info(`已把旧数据迁移到用户数据目录：${migration.migrated.join(', ')}`)
+    }
+  }
   const configStoreLazy = lazy(() =>
     createConfigStore({ configDir: dirs.configDir, dataDir: dirs.dataDir, logger }),
   )
@@ -38,6 +46,7 @@ export function createRuntime({ ctx, config = {}, logger: loggerOverride = null 
     ensureConfigStore,
     configDiagnostics,
     logger,
+    dataDir: dirs.dataDir,
   })
   const { decoderLazy, tempLazy, preparerLazy } = createInputRuntime({ ctx, pluginConfig, dirs, logger })
 

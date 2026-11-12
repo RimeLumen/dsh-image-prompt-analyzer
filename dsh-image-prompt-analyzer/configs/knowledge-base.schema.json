@@ -1,16 +1,26 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://RimeLumen.dsh/dsh-image-prompt-analyzer/configs/knowledge-base.schema.json",
-  "title": "标签知识库配置（2.0，纯本地）",
-  "description": "DSH 图像提示词分析插件的标签知识库配置结构。2.0 只支持本地文件导入，不再有在线源、缓存与同步段。",
+  "title": "标签知识库配置（2.1，纯本地）",
+  "description": "DSH 图像提示词分析插件的标签知识库配置结构。2.1 支持两类本地源：插件目录内的词表文件（local_file），以及外部只读的绘画工作室 SQLite 词库（studio_sqlite）。工作室数据不随插件分发，必须由使用者自己指向本机文件。",
   "type": "object",
-  "required": ["schema_version", "config_id", "storage", "sources", "lookup", "categories"],
+  "required": [
+    "schema_version",
+    "config_id",
+    "storage",
+    "sources",
+    "lookup",
+    "categories"
+  ],
   "additionalProperties": false,
   "properties": {
     "schema_version": {
       "type": "string",
-      "const": "2.0",
-      "description": "本配置结构自身的版本。"
+      "enum": [
+        "2.0",
+        "2.1"
+      ],
+      "description": "本配置结构自身的版本。2.1 增加 studio_sqlite 数据源与 lookup.studio_fallback；2.0 的旧配置仍然可用。"
     },
     "config_id": {
       "type": "string",
@@ -18,118 +28,283 @@
       "maxLength": 64,
       "description": "同类配置内唯一的稳定小写 ID；用户覆盖配置按它匹配。"
     },
-    "display_name": { "type": "string", "maxLength": 120 },
-    "description": { "type": "string", "maxLength": 2000 },
-    "enabled": { "type": "boolean", "default": true },
+    "display_name": {
+      "type": "string",
+      "maxLength": 120
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "enabled": {
+      "type": "boolean",
+      "default": true
+    },
     "strict_mode": {
       "type": "boolean",
       "default": false,
       "description": "为真时未知字段直接报错；为假时只警告。"
     },
-
     "storage": {
       "type": "object",
-      "required": ["backend", "database_path"],
+      "required": [
+        "backend",
+        "database_path"
+      ],
       "additionalProperties": false,
       "properties": {
-        "backend": { "type": "string", "enum": ["sqlite"] },
+        "backend": {
+          "type": "string",
+          "enum": [
+            "sqlite"
+          ]
+        },
         "database_path": {
           "type": "string",
           "minLength": 1,
-          "description": "相对插件包目录的路径，禁止绝对路径与越权。"
+          "description": "知识库文件位置。留相对路径时相对用户数据目录（跨升级保留，不在插件包内），也可以填绝对路径。"
         },
-        "experience_export_path": { "type": "string", "minLength": 1 },
-        "create_if_missing": { "type": "boolean", "default": true },
-        "backup_before_migration": { "type": "boolean", "default": true }
+        "experience_export_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "create_if_missing": {
+          "type": "boolean",
+          "default": true
+        },
+        "backup_before_migration": {
+          "type": "boolean",
+          "default": true
+        }
       }
     },
-
     "sources": {
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/$defs/source" }
+      "items": {
+        "$ref": "#/$defs/source"
+      }
     },
-
     "lookup": {
       "type": "object",
-      "required": ["mode"],
+      "required": [
+        "mode"
+      ],
       "additionalProperties": false,
       "properties": {
         "mode": {
           "type": "string",
-          "const": "local_only",
-          "description": "2.0 只查本地库；联网查询已删除。"
+          "enum": [
+            "local_only",
+            "local_with_studio"
+          ],
+          "default": "local_only",
+          "description": "local_only 只查模型词表（Illustrious / Anima 各自的标签表）；local_with_studio 允许在模型词表未命中时回落到工作室补充词典。"
+        },
+        "studio_fallback": {
+          "type": "boolean",
+          "default": false,
+          "description": "为真时，模型词表查不到的词会再去 studio_sqlite 源里找中文名与分类。为假时工作室数据只用于检索与解释，不参与编译结果。"
         }
       }
     },
-
     "categories": {
       "type": "array",
-      "items": { "$ref": "#/$defs/category" }
+      "items": {
+        "$ref": "#/$defs/category"
+      }
     },
-
     "diagnostics": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "test_database_writable": { "type": "boolean", "default": true },
-        "log_level": { "type": "string", "enum": ["debug", "info", "warn", "error"], "default": "info" }
+        "test_database_writable": {
+          "type": "boolean",
+          "default": true
+        },
+        "log_level": {
+          "type": "string",
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ],
+          "default": "info"
+        }
       }
     }
   },
-
   "$defs": {
     "source": {
       "type": "object",
-      "required": ["source_id", "type", "enabled", "format", "path"],
+      "required": [
+        "source_id",
+        "type",
+        "enabled",
+        "path"
+      ],
       "additionalProperties": false,
       "properties": {
-        "source_id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "maxLength": 64 },
-        "type": { "type": "string", "const": "local_file" },
-        "enabled": { "type": "boolean" },
-        "display_name": { "type": "string", "maxLength": 120 },
+        "source_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "maxLength": 64
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "local_file",
+            "studio_sqlite"
+          ],
+          "description": "local_file 是插件目录内的词表文件；studio_sqlite 是外部只读的绘画工作室 SQLite 词库。"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "model",
+            "supplement"
+          ],
+          "description": "这个词源的角色。model 决定词能不能进提示词；supplement 只用于检索与解释，不替模型词表判定。缺省按类型推断：local_file / local_sqlite 为 model，studio_sqlite 为 supplement。"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "display_name": {
+          "type": "string",
+          "maxLength": 120
+        },
         "format": {
           "type": "string",
-          "enum": ["csv", "xlsx", "docx", "pdf", "txt", "md"],
-          "description": "本地文件格式；每种格式由 lib/kb/readers 下对应读取器解析。"
+          "enum": [
+            "csv",
+            "xlsx",
+            "docx",
+            "pdf",
+            "txt",
+            "md",
+            "sqlite"
+          ],
+          "description": "local_file 的文件格式，由 lib/kb/readers 下对应读取器解析；studio_sqlite 不需要声明，写了也不生效。"
         },
         "path": {
           "type": "string",
           "minLength": 1,
-          "description": "相对插件包目录的文件路径，禁止绝对路径与越权。"
+          "description": "local_file 用相对插件包目录的路径；studio_sqlite 可写本机绝对路径（如 G:/绘画工作室/…/data/tags.sqlite）。两种情况都不允许 URL 与 .. 段。"
         },
         "has_header": {
-          "oneOf": [{ "type": "boolean" }, { "type": "string", "const": "auto" }],
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "string",
+              "const": "auto"
+            }
+          ],
           "default": "auto",
           "description": "CSV 首行是否为表头；auto 时按首行是否命中列名同义词判断。"
         },
-        "delimiter": { "type": "string", "minLength": 1, "maxLength": 1, "default": "," },
+        "delimiter": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1,
+          "default": ","
+        },
         "column_map": {
           "type": "object",
-          "additionalProperties": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "integer", "minimum": 0 }] },
-          "description": "列语义声明：字段名 → 表头名或 0 起始的列下标。只写数据文件里真实存在的列。"
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "integer",
+                "minimum": 0
+              }
+            ]
+          },
+          "description": "列语义声明：字段名 → 表头名或 0 起始的列下标。只写数据文件里真实存在的列；studio_sqlite 不使用。"
         },
         "native_category_map": {
           "type": "object",
-          "additionalProperties": { "type": "string", "enum": ["general", "artist", "copyright", "character", "meta"] },
+          "additionalProperties": {
+            "type": "string",
+            "enum": [
+              "general",
+              "artist",
+              "copyright",
+              "character",
+              "meta"
+            ]
+          },
           "description": "数据文件里的原生类目取值 → Danbooru 五类；缺省按 0/1/3/4/5 映射。"
         },
-        "sheet_name": { "type": "string", "minLength": 1, "description": "xlsx 读取的工作表名；缺省取第一个。" },
-        "limit": { "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 1 }], "description": "只导前 N 行，调试用；null 表示全量。" }
+        "sheet_name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "xlsx 读取的工作表名；缺省取第一个。"
+        },
+        "limit": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 1
+            }
+          ],
+          "description": "只导前 N 行，调试用；null 表示全量。"
+        },
+        "import_user_categories": {
+          "type": "boolean",
+          "default": true,
+          "description": "studio_sqlite 专用：是否连 user_categories / user_category_tags 一起导入，作为中文检索的分类线索。"
+        },
+        "force": {
+          "type": "boolean",
+          "default": false,
+          "description": "studio_sqlite 专用：源库指纹没变也强制重导。"
+        }
       }
     },
     "category": {
       "type": "object",
-      "required": ["category_id", "enabled"],
+      "required": [
+        "category_id",
+        "enabled"
+      ],
       "additionalProperties": false,
       "properties": {
-        "category_id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
-        "enabled": { "type": "boolean" },
-        "display_name": { "type": "string", "maxLength": 120 },
-        "description": { "type": "string", "maxLength": 500 },
+        "category_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "display_name": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500
+        },
         "native_categories": {
           "type": "array",
-          "items": { "type": "string", "enum": ["general", "artist", "copyright", "character", "meta"] }
+          "items": {
+            "type": "string",
+            "enum": [
+              "general",
+              "artist",
+              "copyright",
+              "character",
+              "meta"
+            ]
+          }
         }
       }
     }

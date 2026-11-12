@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url'
 
 import { compilePrompt } from '../lib/compile/index.js'
 import { openKnowledgeDatabase } from '../lib/kb/db.js'
+import { resolveDataPath, scriptDataDir } from '../lib/paths.js'
 import { createKnowledgeBase } from '../lib/kb/index.js'
 import { CHANNELS, DISPOSITIONS, explainFact } from '../lib/trace/ledger.js'
 
@@ -167,12 +168,12 @@ async function prepare(args) {
   if (!args.no_kb) {
     const kbConfigPath = resolveUserPath(String(args.kb_config ?? resolveFromPackage('configs/knowledge-base.default.json')))
     const kbConfig = readJson(kbConfigPath, '知识库配置')
-    // 配置里的相对路径按包目录解析（那是插件自己写下的位置），
+    // 配置里的相对路径按用户数据目录解析（词库在那儿，跨升级保留），
     // 命令行给的 --db 按当前目录解析（那是用户在说"这个文件"）。
     const dbPath =
       args.db && args.db !== true
         ? resolveUserPath(String(args.db))
-        : resolveFromPackage(String(kbConfig.storage?.database_path ?? 'data/knowledge.sqlite3'))
+        : resolveDataPath(kbConfig.storage?.database_path ?? 'knowledge.sqlite3', scriptDataDir())
     if (!existsSync(dbPath)) {
       // 库文件不在就明确说不在。造一个空库会让每次查询都 miss，
       // 而 miss 与「根本没有库」在报告里必须能区分开。

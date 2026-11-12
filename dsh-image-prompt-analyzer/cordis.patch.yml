@@ -18,6 +18,12 @@
 #   第二个 **Host** 插件去 import，而 client.js 的第一句是
 #   `window.__ModuleLoader__.load(...)`，宿主进程里没有 window，
 #   结果是启动时一句「1 entry did not activate ... failed to import」。
+#
+# 【dataDir 为什么不写】
+#   词库导入一次就该一直在，而插件包升级是整包替换——写在包里的数据会被删掉。
+#   留空时插件把数据放到系统用户目录（Windows: %LOCALAPPDATA%\dsh-image-prompt-analyzer，
+#   macOS: ~/Library/Application Support/dsh-image-prompt-analyzer，其余: XDG_DATA_HOME）。
+#   要放别处就填一个**绝对路径**；填相对路径仍按包内解析（只给老安装兼容用）。
 # ============================================================================
 
 - insert:
@@ -25,5 +31,4 @@
       name: '@RimeLumen/dsh-image-prompt-analyzer'
       config:
         configDir: './configs'
-        dataDir: './data'
         logDir: './logs'
